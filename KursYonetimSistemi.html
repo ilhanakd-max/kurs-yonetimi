@@ -1759,9 +1759,27 @@
             return days[day];
         }
 
+        function parseLocalDate(dateStr) {
+            if (!dateStr) return null;
+            const parts = dateStr.split('-').map(Number);
+            if (parts.length !== 3 || parts.some(isNaN)) return null;
+            const date = new Date(parts[0], parts[1] - 1, parts[2]);
+            date.setHours(0, 0, 0, 0);
+            return date;
+        }
+
+        function formatDateForInput(date) {
+            if (!date) return '';
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
         function formatDate(dateStr) {
             if (!dateStr) return '-';
-            const date = new Date(dateStr);
+            const date = parseLocalDate(dateStr);
+            if (!date) return '-';
             return date.toLocaleDateString('tr-TR');
         }
 
@@ -1836,12 +1854,13 @@
 
         function getScheduleEndDate(schedule) {
             if (schedule.endDate) {
-                return new Date(schedule.endDate);
+                return parseLocalDate(schedule.endDate);
             }
 
             const course = data.courses.find(c => c.id === schedule.courseId);
             if (schedule.startDate && course?.duration) {
-                const end = new Date(schedule.startDate);
+                const end = parseLocalDate(schedule.startDate);
+                if (!end) return null;
                 end.setDate(end.getDate() + (course.duration * 7) - 1);
                 return end;
             }
@@ -1854,7 +1873,9 @@
             if (!isActive) return false;
 
             const targetDate = new Date(date);
-            const start = schedule.startDate ? new Date(schedule.startDate) : null;
+            targetDate.setHours(0, 0, 0, 0);
+
+            const start = schedule.startDate ? parseLocalDate(schedule.startDate) : null;
             const end = getScheduleEndDate(schedule);
 
             if (start && targetDate < start) return false;
@@ -2203,7 +2224,7 @@
                     document.getElementById('scheduleEndTime').value = schedule.endTime;
                     document.getElementById('scheduleStartDate').value = schedule.startDate || '';
                     const calculatedEnd = getScheduleEndDate(schedule);
-                    document.getElementById('scheduleEndDate').value = schedule.endDate || (calculatedEnd ? calculatedEnd.toISOString().split('T')[0] : '');
+                    document.getElementById('scheduleEndDate').value = schedule.endDate || (calculatedEnd ? formatDateForInput(calculatedEnd) : '');
                     document.getElementById('scheduleNotes').value = schedule.notes || '';
                     document.getElementById('scheduleActive').checked = schedule.active;
                 }
@@ -2280,9 +2301,11 @@
             if (!endDateValue && startDateValue) {
                 const course = data.courses.find(c => c.id === courseId);
                 if (course?.duration) {
-                    const autoEnd = new Date(startDateValue);
-                    autoEnd.setDate(autoEnd.getDate() + (course.duration * 7) - 1);
-                    endDateValue = autoEnd.toISOString().split('T')[0];
+                    const autoEnd = parseLocalDate(startDateValue);
+                    if (autoEnd) {
+                        autoEnd.setDate(autoEnd.getDate() + (course.duration * 7) - 1);
+                        endDateValue = formatDateForInput(autoEnd);
+                    }
                 }
             }
 
@@ -2309,8 +2332,8 @@
                 showNotification('Yeni ders eklendi!');
             }
 
-            const focusDate = startDateValue ? new Date(startDateValue) : new Date();
-            if (!isNaN(focusDate)) {
+            const focusDate = startDateValue ? parseLocalDate(startDateValue) : new Date();
+            if (focusDate && !isNaN(focusDate)) {
                 currentMonth = focusDate.getMonth();
                 currentYear = focusDate.getFullYear();
             }
