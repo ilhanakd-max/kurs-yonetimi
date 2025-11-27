@@ -1,0 +1,1253 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kurs Yönetim Sistemi</title>
+    <style>
+        :root {
+            --primary-color: #007bff;
+            --secondary-color: #f0f8ff;
+            --text-color: #333;
+            --border-color: #ddd;
+            --white-color: #fff;
+            --danger-color: #dc3545;
+            --success-color: #28a745;
+            --holiday-color: #ffc107;
+            --weekend-color: #f8f9fa;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f7f9;
+            color: var(--text-color);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background-color: var(--primary-color);
+            color: var(--white-color);
+            padding: 20px;
+            text-align: center;
+            border-radius: 8px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2em;
+        }
+
+        header p {
+            margin: 5px 0 0;
+            font-size: 1.1em;
+        }
+
+        nav {
+            display: flex;
+            justify-content: center;
+            background-color: var(--white-color);
+            border-radius: 8px;
+            margin-top: 20px;
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-button {
+            background-color: transparent;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 1em;
+            color: var(--primary-color);
+            border-radius: 5px;
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        .tab-button:hover {
+            background-color: var(--secondary-color);
+        }
+
+        .tab-button.active {
+            background-color: var(--primary-color);
+            color: var(--white-color);
+            font-weight: bold;
+        }
+
+        .tab-content {
+            display: none;
+            background-color: var(--white-color);
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            animation: fadeIn 0.5s;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        h2 {
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        /* Generic styles for UI elements */
+        .card {
+            background: var(--white-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            box-sizing: border-box; /* Important */
+        }
+
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: var(--white-color);
+        }
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+
+        .btn-danger {
+            background-color: var(--danger-color);
+            color: var(--white-color);
+        }
+        .btn-danger:hover {
+            opacity: 0.9;
+        }
+
+        .btn-secondary {
+            background-color: #6c757d;
+            color: var(--white-color);
+        }
+        .btn-secondary:hover {
+            opacity: 0.9;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background-color: var(--secondary-color);
+            font-weight: bold;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+
+        tbody tr.weekend {
+            background-color: var(--weekend-color);
+        }
+
+        tbody tr.holiday {
+            background-color: var(--holiday-color);
+            color: var(--white-color);
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        /* Report Filters */
+        .report-filters {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        /* Calendar Styles */
+        .calendar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .calendar-nav {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .calendar-view-toggle .btn {
+            background-color: #6c757d;
+        }
+        .calendar-view-toggle .btn.active {
+            background-color: var(--primary-color);
+        }
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 5px;
+        }
+        .calendar-day-header {
+            font-weight: bold;
+            text-align: center;
+            padding: 8px;
+            background-color: var(--secondary-color);
+        }
+        .calendar-day {
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            padding: 8px;
+            min-height: 120px;
+            background-color: var(--white-color);
+        }
+        .calendar-day.weekend {
+            background-color: var(--weekend-color);
+        }
+        .calendar-day.holiday .day-date {
+            background-color: var(--holiday-color);
+            color: var(--white-color);
+            border-radius: 50%;
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            text-align: center;
+            line-height: 24px;
+        }
+        .calendar-day.other-month {
+            background-color: #f8f9fa;
+            opacity: 0.7;
+        }
+        .day-header {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .session-item {
+            background-color: var(--secondary-color);
+            border-left: 3px solid var(--primary-color);
+            padding: 5px;
+            margin-bottom: 5px;
+            border-radius: 3px;
+            font-size: 0.9em;
+            cursor: pointer;
+        }
+        .session-item:hover {
+            opacity: 0.8;
+        }
+
+        /* Toast Notification */
+        .toast {
+            visibility: hidden;
+            min-width: 250px;
+            margin-left: -125px;
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            border-radius: 2px;
+            padding: 16px;
+            position: fixed;
+            z-index: 1;
+            left: 50%;
+            bottom: 30px;
+            font-size: 17px;
+        }
+
+        .toast.show {
+            visibility: visible;
+            -webkit-animation: toast-fadein 0.5s, toast-fadeout 0.5s 2.5s;
+            animation: toast-fadein 0.5s, toast-fadeout 0.5s 2.5s;
+        }
+
+        @-webkit-keyframes toast-fadein {
+            from {bottom: 0; opacity: 0;}
+            to {bottom: 30px; opacity: 1;}
+        }
+
+        @keyframes toast-fadein {
+            from {bottom: 0; opacity: 0;}
+            to {bottom: 30px; opacity: 1;}
+        }
+
+        @-webkit-keyframes toast-fadeout {
+            from {bottom: 30px; opacity: 1;}
+            to {bottom: 0; opacity: 0;}
+        }
+
+        @keyframes toast-fadeout {
+            from {bottom: 30px; opacity: 1;}
+            to {bottom: 0; opacity: 0;}
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            nav {
+                flex-direction: column;
+            }
+            .tab-button {
+                width: 100%;
+                margin-bottom: 5px;
+            }
+            header h1 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Kurs Yönetim Sistemi</h1>
+            <p>Çeşme Belediyesi Kültür Müdürlüğü</p>
+        </header>
+        <nav>
+            <button class="tab-button active" data-tab="program">Program</button>
+            <button class="tab-button" data-tab="takvim">Takvim</button>
+            <button class="tab-button" data-tab="raporlama">Raporlama</button>
+            <button class="tab-button" data-tab="ayarlar">Ayarlar</button>
+        </nav>
+        <main>
+            <div id="program" class="tab-content active">
+                <!-- COURSE MANAGEMENT -->
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2>Kurs Yönetimi</h2>
+                        <button id="showCourseFormBtn" class="btn btn-primary">Yeni Kurs Ekle</button>
+                    </div>
+                    <form id="courseForm" class="hidden" style="margin-top: 20px;">
+                        <input type="hidden" id="courseId">
+                        <div class="form-group">
+                            <label for="courseName">Kurs Adı</label>
+                            <input type="text" id="courseName" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="defaultWorkshop">Varsayılan Atölye/Salon</label>
+                            <input type="text" id="defaultWorkshop">
+                        </div>
+                        <div class="form-group">
+                            <label for="defaultInstructor">Varsayılan Eğitmen</label>
+                            <input type="text" id="defaultInstructor">
+                        </div>
+                        <div class="form-group">
+                            <label for="capacity">Kapasite (opsiyonel)</label>
+                            <input type="number" id="capacity">
+                        </div>
+                        <div class="form-group">
+                            <label for="description">Açıklama</label>
+                            <textarea id="description" rows="3"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="courseStatus">Durum</label>
+                            <select id="courseStatus">
+                                <option value="active">Aktif</option>
+                                <option value="passive">Pasif</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Kursu Kaydet</button>
+                        <button type="button" id="cancelCourseEdit" class="btn btn-secondary">İptal</button>
+                    </form>
+                    <table id="coursesTable">
+                        <thead>
+                            <tr>
+                                <th>Kurs Adı</th>
+                                <th>Eğitmen</th>
+                                <th>Atölye</th>
+                                <th>Durum</th>
+                                <th>İşlemler</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- SESSION MANAGEMENT -->
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2>Ders Programı Yönetimi</h2>
+                        <button id="showSessionFormBtn" class="btn btn-primary">Yeni Ders Ekle</button>
+                    </div>
+                    <form id="sessionForm" class="hidden" style="margin-top: 20px;">
+                        <input type="hidden" id="sessionId">
+                        <div class="form-group">
+                            <label for="sessionDate">Tarih</label>
+                            <input type="date" id="sessionDate" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="startTime">Başlangıç Saati</label>
+                            <input type="time" id="startTime" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="endTime">Bitiş Saati</label>
+                            <input type="time" id="endTime" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="sessionCourse">Kurs</label>
+                            <select id="sessionCourse" required></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="sessionWorkshop">Atölye/Salon</label>
+                            <input type="text" id="sessionWorkshop" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="sessionInstructor">Eğitmen</label>
+                            <input type="text" id="sessionInstructor" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="sessionNote">Not</label>
+                            <textarea id="sessionNote" rows="2"></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Dersi Kaydet</button>
+                        <button type="button" id="cancelSessionEdit" class="btn btn-secondary">İptal</button>
+                    </form>
+                    <table id="sessionsTable">
+                        <thead>
+                            <tr>
+                                <th>Tarih</th>
+                                <th>Gün</th>
+                                <th>Saat</th>
+                                <th>Kurs</th>
+                                <th>Eğitmen</th>
+                                <th>Atölye</th>
+                                <th>İşlemler</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="takvim" class="tab-content">
+                <div class="card">
+                    <div class="calendar-header">
+                        <div class="calendar-nav">
+                            <button id="prevWeekBtn" class="btn btn-secondary">&lt; Önceki Hafta</button>
+                            <button id="prevMonthBtn" class="btn btn-secondary">&lt; Önceki Ay</button>
+                            <h3 id="calendarTitle"></h3>
+                            <button id="nextWeekBtn" class="btn btn-secondary">Sonraki Hafta &gt;</button>
+                            <button id="nextMonthBtn" class="btn btn-secondary">Sonraki Ay &gt;</button>
+                        </div>
+                        <div class="calendar-view-toggle">
+                            <button id="weeklyViewBtn" class="btn btn-primary active">Haftalık</button>
+                            <button id="monthlyViewBtn" class="btn btn-primary">Aylık</button>
+                        </div>
+                    </div>
+                    <div id="calendarGrid" class="calendar-grid"></div>
+                </div>
+            </div>
+            <div id="raporlama" class="tab-content">
+                <h2>Raporlama</h2>
+                <div class="card">
+                    <h3>Rapor Filtreleri</h3>
+                    <form id="reportForm">
+                        <div class="report-filters">
+                            <div class="form-group">
+                                <label for="reportStartDate">Başlangıç Tarihi</label>
+                                <input type="date" id="reportStartDate">
+                            </div>
+                            <div class="form-group">
+                                <label for="reportEndDate">Bitiş Tarihi</label>
+                                <input type="date" id="reportEndDate">
+                            </div>
+                            <div class="form-group">
+                                <label for="reportCourse">Kurs</label>
+                                <select id="reportCourse">
+                                    <option value="all">Tümü</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="reportInstructor">Eğitmen</label>
+                                <select id="reportInstructor">
+                                    <option value="all">Tümü</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="reportWorkshop">Atölye</label>
+                                <select id="reportWorkshop">
+                                    <option value="all">Tümü</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="reportGroupBy">Grupla</label>
+                                <select id="reportGroupBy">
+                                    <option value="none">Gruplama Yok</option>
+                                    <option value="course">Kursa Göre</option>
+                                    <option value="instructor">Eğitmene Göre</option>
+                                    <option value="day">Güne Göre</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Rapor Oluştur</button>
+                    </form>
+                </div>
+                <div class="card">
+                    <h3>Rapor Sonucu</h3>
+                    <div id="reportOutput" style="white-space: pre; font-family: monospace; background: #f4f4f4; padding: 15px; border-radius: 5px; max-height: 400px; overflow-y: auto;">
+                        Rapor oluşturmak için filtreleri seçin ve butona tıklayın.
+                    </div>
+                    <button id="copyReportBtn" class="btn btn-secondary" style="margin-top: 15px;">Panoya Kopyala</button>
+                </div>
+            </div>
+            <div id="ayarlar" class="tab-content">
+                <h2>Ayarlar</h2>
+                <div class="card">
+                    <h3>Genel Ayarlar</h3>
+                    <form id="settingsForm">
+                        <div class="form-group">
+                            <label for="municipalityName">Belediye Adı</label>
+                            <input type="text" id="municipalityName" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="departmentName">Departman Adı</label>
+                            <input type="text" id="departmentName" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="activeYear">Aktif Çalışma Yılı</label>
+                            <input type="number" id="activeYear" placeholder="Örn: 2024" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Hafta Sonu Vurgulama</label>
+                            <input type="checkbox" id="weekendHighlighting">
+                        </div>
+                        <div class="form-group">
+                            <label>Resmi Tatil Vurgulama</label>
+                            <input type="checkbox" id="holidayHighlighting">
+                        </div>
+                        <div class="form-group">
+                            <label for="officialHolidays">Yıllık Resmi Tatiller (Her satıra bir tane, GG-AA formatında)</label>
+                            <textarea id="officialHolidays" rows="5"></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Ayarları Kaydet</button>
+                    </form>
+                </div>
+                <div class="card">
+                    <h3>Veri Yönetimi</h3>
+                    <button id="resetData" class="btn btn-danger">Uygulama Verilerini Sıfırla</button>
+                </div>
+            </div>
+        </main>
+        <div id="toast" class="toast"></div>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- CORE STATE MANAGEMENT ---
+            let settings = {};
+            let courses = [];
+            let sessions = [];
+
+            const defaultSettings = {
+                municipalityName: 'Çeşme Belediyesi',
+                departmentName: 'Kültür Müdürlüğü',
+                activeYear: new Date().getFullYear(),
+                weekendHighlighting: true,
+                holidayHighlighting: true,
+                officialHolidays: [
+                    '01-01', // Yılbaşı
+                    '23-04', // Ulusal Egemenlik ve Çocuk Bayramı
+                    '01-05', // Emek ve Dayanışma Günü
+                    '19-05', // Atatürk\'ü Anma, Gençlik ve Spor Bayramı
+                    '15-07', // Demokrasi ve Milli Birlik Günü
+                    '30-08', // Zafer Bayramı
+                    '29-10', // Cumhuriyet Bayramı
+                ]
+            };
+
+            function loadData() {
+                const storedSettings = localStorage.getItem('settings');
+                settings = storedSettings ? JSON.parse(storedSettings) : defaultSettings;
+
+                const storedCourses = localStorage.getItem('courses');
+                courses = storedCourses ? JSON.parse(storedCourses) : [];
+
+                const storedSessions = localStorage.getItem('sessions');
+                sessions = storedSessions ? JSON.parse(storedSessions) : [];
+
+                applySettings();
+                populateSettingsForm();
+            }
+
+            function saveData() {
+                localStorage.setItem('settings', JSON.stringify(settings));
+                localStorage.setItem('courses', JSON.stringify(courses));
+                localStorage.setItem('sessions', JSON.stringify(sessions));
+            }
+
+            // --- TABS ---
+            const tabButtons = document.querySelectorAll('.tab-button');
+            const tabContents = document.querySelectorAll('.tab-content');
+
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    tabButtons.forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+
+                    tabContents.forEach(content => content.classList.remove('active'));
+                    document.getElementById(button.dataset.tab).classList.add('active');
+                });
+            });
+
+            // --- SETTINGS TAB ---
+            const settingsForm = document.getElementById('settingsForm');
+            const municipalityNameInput = document.getElementById('municipalityName');
+            const departmentNameInput = document.getElementById('departmentName');
+            const activeYearInput = document.getElementById('activeYear');
+            const weekendHighlightingInput = document.getElementById('weekendHighlighting');
+            const holidayHighlightingInput = document.getElementById('holidayHighlighting');
+            const officialHolidaysInput = document.getElementById('officialHolidays');
+            const resetDataButton = document.getElementById('resetData');
+
+            function populateSettingsForm() {
+                municipalityNameInput.value = settings.municipalityName;
+                departmentNameInput.value = settings.departmentName;
+                activeYearInput.value = settings.activeYear;
+                weekendHighlightingInput.checked = settings.weekendHighlighting;
+                holidayHighlightingInput.checked = settings.holidayHighlighting;
+                officialHolidaysInput.value = settings.officialHolidays.join('\n');
+            }
+
+            function applySettings() {
+                document.querySelector('header h1').textContent = settings.municipalityName + ' Kurs Yönetim Sistemi';
+                document.querySelector('header p').textContent = settings.departmentName;
+            }
+
+            settingsForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                settings.municipalityName = municipalityNameInput.value;
+                settings.departmentName = departmentNameInput.value;
+                settings.activeYear = parseInt(activeYearInput.value, 10);
+                settings.weekendHighlighting = weekendHighlightingInput.checked;
+                settings.holidayHighlighting = holidayHighlightingInput.checked;
+                settings.officialHolidays = officialHolidaysInput.value.split('\n').filter(h => h.trim() !== '');
+
+                saveData();
+                applySettings();
+                showToast('Ayarlar başarıyla kaydedildi.');
+            });
+
+            resetDataButton.addEventListener('click', () => {
+                if (confirm('Tüm kurs ve ders programı verileri silinecektir. Bu işlem geri alınamaz. Emin misiniz?')) {
+                    courses = [];
+                    sessions = [];
+                    saveData();
+                    updateAllViews();
+                    showToast('Tüm veriler sıfırlandı.');
+                }
+            });
+
+            // --- HELPER FUNCTIONS ---
+            function generateId() {
+                return '_' + Math.random().toString(36).substr(2, 9);
+            }
+
+            function showToast(message) {
+                const toast = document.getElementById('toast');
+                toast.textContent = message;
+                toast.classList.add('show');
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                }, 3000);
+            }
+
+            function updateAllViews() {
+                renderCourses();
+                renderSessions();
+                populateReportFilters();
+            }
+
+            // --- PROGRAM TAB (COURSES) ---
+            const courseForm = document.getElementById('courseForm');
+            const coursesTableBody = document.querySelector('#coursesTable tbody');
+            const showCourseFormBtn = document.getElementById('showCourseFormBtn');
+            const cancelCourseEditBtn = document.getElementById('cancelCourseEdit');
+
+            function renderCourses() {
+                coursesTableBody.innerHTML = '';
+                courses.forEach(course => {
+                    const row = coursesTableBody.insertRow();
+                    row.innerHTML = `
+                        <td>${course.name}</td>
+                        <td>${course.defaultInstructor}</td>
+                        <td>${course.defaultWorkshop}</td>
+                        <td>${course.status === 'active' ? 'Aktif' : 'Pasif'}</td>
+                        <td>
+                            <button class="btn btn-secondary btn-sm" onclick="editCourse('${course.id}')">Düzenle</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteCourse('${course.id}')">Sil</button>
+                        </td>
+                    `;
+                });
+                populateCourseDropdown();
+            }
+
+            showCourseFormBtn.addEventListener('click', () => {
+                courseForm.classList.remove('hidden');
+                showCourseFormBtn.classList.add('hidden');
+            });
+
+            cancelCourseEditBtn.addEventListener('click', () => {
+                courseForm.reset();
+                document.getElementById('courseId').value = '';
+                courseForm.classList.add('hidden');
+                showCourseFormBtn.classList.remove('hidden');
+            });
+
+            courseForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const courseId = document.getElementById('courseId').value;
+                const course = {
+                    id: courseId || generateId(),
+                    name: document.getElementById('courseName').value,
+                    defaultWorkshop: document.getElementById('defaultWorkshop').value,
+                    defaultInstructor: document.getElementById('defaultInstructor').value,
+                    capacity: document.getElementById('capacity').value,
+                    description: document.getElementById('description').value,
+                    status: document.getElementById('courseStatus').value
+                };
+
+                if (courseId) {
+                    const index = courses.findIndex(c => c.id === courseId);
+                    courses[index] = course;
+                } else {
+                    courses.push(course);
+                }
+                saveData();
+                updateAllViews();
+                cancelCourseEditBtn.click();
+                showToast(courseId ? 'Kurs güncellendi.' : 'Kurs eklendi.');
+            });
+
+            window.editCourse = (id) => {
+                const course = courses.find(c => c.id === id);
+                document.getElementById('courseId').value = course.id;
+                document.getElementById('courseName').value = course.name;
+                document.getElementById('defaultWorkshop').value = course.defaultWorkshop;
+                document.getElementById('defaultInstructor').value = course.defaultInstructor;
+                document.getElementById('capacity').value = course.capacity;
+                document.getElementById('description').value = course.description;
+                document.getElementById('courseStatus').value = course.status;
+                courseForm.classList.remove('hidden');
+                showCourseFormBtn.classList.add('hidden');
+            };
+
+            window.deleteCourse = (id) => {
+                if (confirm('Bu kursu silmek istediğinize emin misiniz?')) {
+                    courses = courses.filter(c => c.id !== id);
+                    saveData();
+                    updateAllViews();
+                    showToast('Kurs silindi.');
+                }
+            };
+
+
+            // --- PROGRAM TAB (SESSIONS) ---
+            const sessionForm = document.getElementById('sessionForm');
+            const sessionsTableBody = document.querySelector('#sessionsTable tbody');
+            const showSessionFormBtn = document.getElementById('showSessionFormBtn');
+            const cancelSessionEditBtn = document.getElementById('cancelSessionEdit');
+            const sessionCourseSelect = document.getElementById('sessionCourse');
+
+            function populateCourseDropdown() {
+                sessionCourseSelect.innerHTML = '<option value="">Kurs Seçin</option>';
+                const activeCourses = courses.filter(c => c.status === 'active');
+                activeCourses.forEach(course => {
+                    const option = document.createElement('option');
+                    option.value = course.id;
+                    option.textContent = course.name;
+                    sessionCourseSelect.appendChild(option);
+                });
+            }
+
+            sessionCourseSelect.addEventListener('change', () => {
+                const selectedCourse = courses.find(c => c.id === sessionCourseSelect.value);
+                if (selectedCourse) {
+                    document.getElementById('sessionWorkshop').value = selectedCourse.defaultWorkshop;
+                    document.getElementById('sessionInstructor').value = selectedCourse.defaultInstructor;
+                }
+            });
+
+            function renderSessions() {
+                sessionsTableBody.innerHTML = '';
+                // Sort sessions by date, most recent first
+                sessions.sort((a, b) => new Date(b.date) - new Date(a.date));
+                sessions.forEach(session => {
+                    const course = courses.find(c => c.id === session.courseId);
+                    const row = sessionsTableBody.insertRow();
+                    const sessionDate = new Date(session.date);
+
+                    let rowClass = '';
+                    if (settings.weekendHighlighting && isWeekend(sessionDate)) {
+                        rowClass = 'weekend';
+                    }
+                    if (findHoliday(sessionDate)) {
+                        rowClass = 'holiday'; // Holiday takes precedence
+                    }
+                    row.className = rowClass;
+
+                    row.innerHTML = `
+                        <td>${formatDateTR(sessionDate)}</td>
+                        <td>${getDayNameTR(sessionDate)}</td>
+                        <td>${session.startTime} - ${session.endTime}</td>
+                        <td>${course ? course.name : 'Bilinmeyen Kurs'}</td>
+                        <td>${session.instructor}</td>
+                        <td>${session.workshop}</td>
+                        <td>
+                            <button class="btn btn-secondary btn-sm" onclick="editSession('${session.id}')">Düzenle</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteSession('${session.id}')">Sil</button>
+                        </td>
+                    `;
+                });
+            }
+
+            showSessionFormBtn.addEventListener('click', () => {
+                sessionForm.classList.remove('hidden');
+                showSessionFormBtn.classList.add('hidden');
+            });
+
+            cancelSessionEditBtn.addEventListener('click', () => {
+                sessionForm.reset();
+                document.getElementById('sessionId').value = '';
+                sessionForm.classList.add('hidden');
+                showSessionFormBtn.classList.remove('hidden');
+            });
+
+            sessionForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const sessionId = document.getElementById('sessionId').value;
+                const session = {
+                    id: sessionId || generateId(),
+                    date: document.getElementById('sessionDate').value,
+                    startTime: document.getElementById('startTime').value,
+                    endTime: document.getElementById('endTime').value,
+                    courseId: document.getElementById('sessionCourse').value,
+                    workshop: document.getElementById('sessionWorkshop').value,
+                    instructor: document.getElementById('sessionInstructor').value,
+                    note: document.getElementById('sessionNote').value
+                };
+
+                if (sessionId) {
+                    const index = sessions.findIndex(s => s.id === sessionId);
+                    sessions[index] = session;
+                } else {
+                    sessions.push(session);
+                }
+                saveData();
+                updateAllViews();
+                cancelSessionEditBtn.click();
+                showToast(sessionId ? 'Ders güncellendi.' : 'Ders eklendi.');
+            });
+
+            window.editSession = (id) => {
+                const session = sessions.find(s => s.id === id);
+                document.getElementById('sessionId').value = session.id;
+                document.getElementById('sessionDate').value = session.date;
+                document.getElementById('startTime').value = session.startTime;
+                document.getElementById('endTime').value = session.endTime;
+                document.getElementById('sessionCourse').value = session.courseId;
+                document.getElementById('sessionWorkshop').value = session.workshop;
+                document.getElementById('sessionInstructor').value = session.instructor;
+                document.getElementById('sessionNote').value = session.note;
+                sessionForm.classList.remove('hidden');
+                showSessionFormBtn.classList.add('hidden');
+            };
+
+            window.deleteSession = (id) => {
+                if (confirm('Bu dersi silmek istediğinize emin misiniz?')) {
+                    sessions = sessions.filter(s => s.id !== id);
+                    saveData();
+                    updateAllViews();
+                    showToast('Ders silindi.');
+                }
+            };
+
+            // --- DATE HELPERS ---
+            function formatDateTR(date) {
+                return date.toLocaleDateString('tr-TR', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                });
+            }
+
+            function getDayNameTR(date, length = 'long') {
+                return date.toLocaleDateString('tr-TR', { weekday: length });
+            }
+
+            function isWeekend(date) {
+                const day = date.getDay();
+                return day === 0 || day === 6; // Sunday or Saturday
+            }
+
+            function findHoliday(date) {
+                if (!settings.holidayHighlighting) return null;
+                const dayMonth = `${('0' + (date.getDate())).slice(-2)}-${('0' + (date.getMonth() + 1)).slice(-2)}`;
+                return settings.officialHolidays.includes(dayMonth);
+            }
+
+            // --- CALENDAR TAB ---
+            let currentCalendarDate = new Date();
+            let calendarViewMode = 'weekly'; // 'weekly' or 'monthly'
+
+            const calendarTitle = document.getElementById('calendarTitle');
+            const calendarGrid = document.getElementById('calendarGrid');
+            const weeklyViewBtn = document.getElementById('weeklyViewBtn');
+            const monthlyViewBtn = document.getElementById('monthlyViewBtn');
+            const prevWeekBtn = document.getElementById('prevWeekBtn');
+            const nextWeekBtn = document.getElementById('nextWeekBtn');
+            const prevMonthBtn = document.getElementById('prevMonthBtn');
+            const nextMonthBtn = document.getElementById('nextMonthBtn');
+
+            function renderCalendar() {
+                if (calendarViewMode === 'weekly') {
+                    renderWeeklyCalendar();
+                } else {
+                    renderMonthlyCalendar();
+                }
+            }
+
+            function renderWeeklyCalendar() {
+                calendarGrid.innerHTML = '';
+                const startOfWeek = new Date(currentCalendarDate);
+                const dayOfWeek = currentCalendarDate.getDay();
+                const diff = currentCalendarDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Adjust for Sunday
+                startOfWeek.setDate(diff);
+
+                calendarTitle.textContent = `${formatDateTR(startOfWeek)} - ${formatDateTR(new Date(startOfWeek).setDate(startOfWeek.getDate() + 6))}`;
+
+                for (let i = 0; i < 7; i++) {
+                    const day = new Date(startOfWeek);
+                    day.setDate(startOfWeek.getDate() + i);
+
+                    const dayCell = document.createElement('div');
+                    dayCell.className = 'calendar-day';
+
+                    let classes = [];
+                    if (settings.weekendHighlighting && isWeekend(day)) classes.push('weekend');
+                    if (findHoliday(day)) classes.push('holiday');
+                    dayCell.classList.add(...classes);
+
+                    dayCell.innerHTML = `
+                        <div class="day-header">
+                            <span class="day-name">${getDayNameTR(day, 'short')}</span>
+                            <span class="day-date">${day.getDate()}</span>
+                        </div>
+                        <div class="day-sessions"></div>
+                    `;
+                    calendarGrid.appendChild(dayCell);
+
+                    const daySessions = sessions.filter(s => new Date(s.date).toDateString() === day.toDateString());
+                    const sessionsContainer = dayCell.querySelector('.day-sessions');
+                    daySessions.sort((a,b) => a.startTime.localeCompare(b.startTime));
+                    daySessions.forEach(session => {
+                        const course = courses.find(c => c.id === session.courseId);
+                        const sessionEl = document.createElement('div');
+                        sessionEl.className = 'session-item';
+                        sessionEl.innerHTML = `<strong>${session.startTime}</strong> - ${course ? course.name : 'Silinmiş Kurs'}`;
+                        sessionEl.title = `${session.startTime}-${session.endTime} | ${course.name}\nEğitmen: ${session.instructor}\nAtölye: ${session.workshop}`;
+                        sessionEl.onclick = () => showSessionInForm(session.id);
+                        sessionsContainer.appendChild(sessionEl);
+                    });
+                }
+            }
+
+            function renderMonthlyCalendar() {
+                calendarGrid.innerHTML = '';
+                const year = currentCalendarDate.getFullYear();
+                const month = currentCalendarDate.getMonth();
+
+                const firstDayOfMonth = new Date(year, month, 1);
+                const lastDayOfMonth = new Date(year, month + 1, 0);
+
+                calendarTitle.textContent = `${firstDayOfMonth.toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}`;
+
+                const startDay = (firstDayOfMonth.getDay() + 6) % 7; // Monday is 0
+
+                // Day headers
+                ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'].forEach(dayName => {
+                    const headerCell = document.createElement('div');
+                    headerCell.className = 'calendar-day-header';
+                    headerCell.innerHTML = `<strong>${dayName}</strong>`;
+                    calendarGrid.appendChild(headerCell);
+                });
+
+                for (let i = 0; i < startDay; i++) {
+                    const emptyCell = document.createElement('div');
+                    emptyCell.className = 'calendar-day other-month';
+                    calendarGrid.appendChild(emptyCell);
+                }
+
+                for (let i = 1; i <= lastDayOfMonth.getDate(); i++) {
+                    const day = new Date(year, month, i);
+                    const dayCell = document.createElement('div');
+                    dayCell.className = 'calendar-day';
+
+                    let classes = [];
+                    if (settings.weekendHighlighting && isWeekend(day)) classes.push('weekend');
+                    if (findHoliday(day)) classes.push('holiday');
+                    dayCell.classList.add(...classes);
+
+                    dayCell.innerHTML = `<div class="day-header"><span class="day-date">${i}</span></div><div class="day-sessions"></div>`;
+                    calendarGrid.appendChild(dayCell);
+
+                     const daySessions = sessions.filter(s => new Date(s.date).toDateString() === day.toDateString());
+                    const sessionsContainer = dayCell.querySelector('.day-sessions');
+                    daySessions.sort((a,b) => a.startTime.localeCompare(b.startTime));
+                    daySessions.forEach(session => {
+                        const course = courses.find(c => c.id === session.courseId);
+                        const sessionEl = document.createElement('div');
+                        sessionEl.className = 'session-item';
+                        sessionEl.innerHTML = `<strong>${session.startTime}</strong> - ${course ? course.name.substring(0,10) : ''}`;
+                        sessionEl.title = `${session.startTime}-${session.endTime} | ${course.name}\nEğitmen: ${session.instructor}\nAtölye: ${session.workshop}`;
+                        sessionEl.onclick = () => showSessionInForm(session.id);
+                        sessionsContainer.appendChild(sessionEl);
+                    });
+                }
+            }
+
+            function showSessionInForm(sessionId) {
+                // Switch to program tab
+                document.querySelector('.tab-button[data-tab="program"]').click();
+                // Find and populate session in form
+                editSession(sessionId);
+            }
+
+            function updateCalendarNav() {
+                if (calendarViewMode === 'weekly') {
+                    prevWeekBtn.style.display = 'inline-block';
+                    nextWeekBtn.style.display = 'inline-block';
+                    prevMonthBtn.style.display = 'none';
+                    nextMonthBtn.style.display = 'none';
+                } else {
+                    prevWeekBtn.style.display = 'none';
+                    nextWeekBtn.style.display = 'none';
+                    prevMonthBtn.style.display = 'inline-block';
+                    nextMonthBtn.style.display = 'inline-block';
+                }
+            }
+
+            weeklyViewBtn.addEventListener('click', () => {
+                calendarViewMode = 'weekly';
+                weeklyViewBtn.classList.add('active');
+                monthlyViewBtn.classList.remove('active');
+                updateCalendarNav();
+                renderCalendar();
+            });
+
+            monthlyViewBtn.addEventListener('click', () => {
+                calendarViewMode = 'monthly';
+                monthlyViewBtn.classList.add('active');
+                weeklyViewBtn.classList.remove('active');
+                updateCalendarNav();
+                renderCalendar();
+            });
+
+            prevWeekBtn.addEventListener('click', () => {
+                currentCalendarDate.setDate(currentCalendarDate.getDate() - 7);
+                renderCalendar();
+            });
+
+            nextWeekBtn.addEventListener('click', () => {
+                currentCalendarDate.setDate(currentCalendarDate.getDate() + 7);
+                renderCalendar();
+            });
+
+            prevMonthBtn.addEventListener('click', () => {
+                currentCalendarDate.setMonth(currentCalendarDate.getMonth() - 1);
+                renderCalendar();
+            });
+
+            nextMonthBtn.addEventListener('click', () => {
+                currentCalendarDate.setMonth(currentCalendarDate.getMonth() + 1);
+                renderCalendar();
+            });
+
+            // Re-render calendar when data changes
+            const originalSaveData = saveData;
+            saveData = function() {
+                originalSaveData.apply(this, arguments);
+                renderCalendar();
+            };
+
+
+            // --- REPORTING TAB ---
+            const reportForm = document.getElementById('reportForm');
+            const reportOutput = document.getElementById('reportOutput');
+            const copyReportBtn = document.getElementById('copyReportBtn');
+
+            function populateReportFilters() {
+                const reportCourseSelect = document.getElementById('reportCourse');
+                const reportInstructorSelect = document.getElementById('reportInstructor');
+                const reportWorkshopSelect = document.getElementById('reportWorkshop');
+
+                // Courses
+                reportCourseSelect.innerHTML = '<option value="all">Tüm Kurslar</option>';
+                courses.forEach(c => {
+                    reportCourseSelect.innerHTML += `<option value="${c.id}">${c.name}</option>`;
+                });
+
+                // Instructors
+                const instructors = [...new Set(sessions.map(s => s.instructor))];
+                reportInstructorSelect.innerHTML = '<option value="all">Tüm Eğitmenler</option>';
+                instructors.forEach(i => {
+                    reportInstructorSelect.innerHTML += `<option value="${i}">${i}</option>`;
+                });
+
+                // Workshops
+                const workshops = [...new Set(sessions.map(s => s.workshop))];
+                reportWorkshopSelect.innerHTML = '<option value="all">Tüm Atölyeler</option>';
+                workshops.forEach(w => {
+                    reportWorkshopSelect.innerHTML += `<option value="${w}">${w}</option>`;
+                });
+            }
+
+            reportForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                generateReport();
+            });
+
+            function generateReport() {
+                const startDate = document.getElementById('reportStartDate').value;
+                const endDate = document.getElementById('reportEndDate').value;
+                const courseId = document.getElementById('reportCourse').value;
+                const instructor = document.getElementById('reportInstructor').value;
+                const workshop = document.getElementById('reportWorkshop').value;
+                const groupBy = document.getElementById('reportGroupBy').value;
+
+                let filteredSessions = sessions.filter(s => {
+                    let valid = true;
+                    if (startDate) valid = valid && s.date >= startDate;
+                    if (endDate) valid = valid && s.date <= endDate;
+                    if (courseId !== 'all') valid = valid && s.courseId === courseId;
+                    if (instructor !== 'all') valid = valid && s.instructor === instructor;
+                    if (workshop !== 'all') valid = valid && s.workshop === workshop;
+                    return valid;
+                });
+
+                if(filteredSessions.length === 0) {
+                    reportOutput.textContent = 'Belirtilen kriterlere uygun ders bulunamadı.';
+                    return;
+                }
+
+                let output = `${settings.municipalityName} - ${settings.departmentName}\n`;
+                output += `DERS PROGRAMI RAPORU\n`;
+                output += `Oluşturma Tarihi: ${formatDateTR(new Date())}\n`;
+                output += `--------------------------------------------------\n\n`;
+
+                let totalHours = 0;
+
+                const getDuration = (s) => {
+                    const start = new Date(`1970-01-01T${s.startTime}`);
+                    const end = new Date(`1970-01-01T${s.endTime}`);
+                    return (end - start) / (1000 * 60 * 60); // hours
+                };
+
+                const grouped = {};
+                if (groupBy !== 'none') {
+                    filteredSessions.forEach(s => {
+                        let key;
+                        const course = courses.find(c => c.id === s.courseId);
+                        switch(groupBy) {
+                            case 'course': key = course ? course.name : 'Bilinmeyen'; break;
+                            case 'instructor': key = s.instructor; break;
+                            case 'day': key = formatDateTR(new Date(s.date)); break;
+                        }
+                        if(!grouped[key]) grouped[key] = [];
+                        grouped[key].push(s);
+                    });
+
+                    for(const groupName in grouped) {
+                        output += `=== ${groupName.toUpperCase()} ===\n`;
+                        let groupHours = 0;
+                        grouped[groupName].forEach(s => {
+                            const course = courses.find(c => c.id === s.courseId);
+                            const duration = getDuration(s);
+                            groupHours += duration;
+                            output += `${formatDateTR(new Date(s.date))} (${getDayNameTR(new Date(s.date))}) | ${s.startTime}-${s.endTime} | ${course ? course.name : 'Silinmiş Kurs'} | ${s.instructor} | ${duration.toFixed(2)} saat\n`;
+                        });
+                        output += `Grup Toplam Saati: ${groupHours.toFixed(2)}\n\n`;
+                        totalHours += groupHours;
+                    }
+                } else {
+                     filteredSessions.forEach(s => {
+                        const course = courses.find(c => c.id === s.courseId);
+                        const duration = getDuration(s);
+                        totalHours += duration;
+                        output += `${formatDateTR(new Date(s.date))} (${getDayNameTR(new Date(s.date))}) | ${s.startTime}-${s.endTime} | ${course ? course.name : 'Silinmiş Kurs'} | ${s.instructor} | ${duration.toFixed(2)} saat\n`;
+                    });
+                }
+
+                output += `--------------------------------------------------\n`;
+                output += `TOPLAM DERS SAATİ: ${totalHours.toFixed(2)}\n`;
+                output += `TOPLAM DERS SAYISI: ${filteredSessions.length}\n`;
+
+                reportOutput.textContent = output;
+            }
+
+            copyReportBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(reportOutput.textContent).then(() => {
+                    showToast('Rapor panoya kopyalandı!');
+                }, () => {
+                    showToast('Kopyalama başarısız oldu.');
+                });
+            });
+
+            // Re-populate filters when data changes
+            const originalLoadData = loadData;
+            loadData = function() {
+                originalLoadData.apply(this, arguments);
+                populateReportFilters();
+            };
+
+
+            // --- INITIAL LOAD ---
+            loadData();
+            renderCourses();
+            renderSessions();
+            updateCalendarNav();
+            renderCalendar();
+            populateReportFilters();
+        });
+    </script>
+</body>
+</html>
