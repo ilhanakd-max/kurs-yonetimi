@@ -1360,6 +1360,14 @@
                             <input type="number" id="courseCapacity" min="1" value="20">
                         </div>
                         <div class="form-group">
+                            <label>Başlangıç Saati *</label>
+                            <input type="time" id="courseStartTime" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Bitiş Saati *</label>
+                            <input type="time" id="courseEndTime" required>
+                        </div>
+                        <div class="form-group">
                             <label>Yaş Grubu</label>
                             <select id="courseAgeGroup">
                                 <option value="child">Çocuk (7-12)</option>
@@ -2208,9 +2216,14 @@
             document.getElementById('scheduleForm').reset();
             document.getElementById('scheduleId').value = '';
             document.getElementById('scheduleModalTitle').textContent = 'Yeni Ders Ekle';
-            
+
             populateScheduleSelects();
-            
+
+            const courseSelect = document.getElementById('scheduleCourse');
+            courseSelect.onchange = function() {
+                applyCourseTimesToSchedule(this.value, true);
+            };
+
             if (id) {
                 const schedule = data.schedules.find(s => s.id === id);
                 if (schedule) {
@@ -2229,7 +2242,11 @@
                     document.getElementById('scheduleActive').checked = schedule.active;
                 }
             }
-            
+
+            if (!id && courseSelect.value) {
+                applyCourseTimesToSchedule(courseSelect.value);
+            }
+
             openModal('scheduleModal');
         }
 
@@ -2237,15 +2254,31 @@
             const courseSelect = document.getElementById('scheduleCourse');
             const teacherSelect = document.getElementById('scheduleTeacher');
             const workshopSelect = document.getElementById('scheduleWorkshop');
-            
-            courseSelect.innerHTML = '<option value="">Kurs Seçin</option>' + 
+
+            courseSelect.innerHTML = '<option value="">Kurs Seçin</option>' +
                 data.courses.filter(c => c.active).map(c => `<option value="${c.id}">${c.name}</option>`).join('');
             
-            teacherSelect.innerHTML = '<option value="">Eğitmen Seçin</option>' + 
+            teacherSelect.innerHTML = '<option value="">Eğitmen Seçin</option>' +
                 data.teachers.filter(t => t.active).map(t => `<option value="${t.id}">${t.name} (${t.branch})</option>`).join('');
-            
-            workshopSelect.innerHTML = '<option value="">Atölye Seçin</option>' + 
+
+            workshopSelect.innerHTML = '<option value="">Atölye Seçin</option>' +
                 data.workshops.filter(w => w.active).map(w => `<option value="${w.id}">${w.name}</option>`).join('');
+        }
+
+        function applyCourseTimesToSchedule(courseId, overwrite = false) {
+            const course = data.courses.find(c => c.id === courseId);
+            if (!course) return;
+
+            const startInput = document.getElementById('scheduleStartTime');
+            const endInput = document.getElementById('scheduleEndTime');
+
+            if (overwrite || !startInput.value) {
+                startInput.value = course.startTime || '';
+            }
+
+            if (overwrite || !endInput.value) {
+                endInput.value = course.endTime || '';
+            }
         }
 
         function saveSchedule() {
@@ -2448,6 +2481,8 @@
                     document.getElementById('courseCategorySelect').value = course.category;
                     document.getElementById('courseDuration').value = course.duration;
                     document.getElementById('courseCapacity').value = course.capacity;
+                    document.getElementById('courseStartTime').value = course.startTime || '';
+                    document.getElementById('courseEndTime').value = course.endTime || '';
                     document.getElementById('courseAgeGroup').value = course.ageGroup || 'all';
                     document.getElementById('courseLevel').value = course.level || 'beginner';
                     document.getElementById('courseDescription').value = course.description || '';
@@ -2468,9 +2503,21 @@
             const id = document.getElementById('courseId').value;
             const name = document.getElementById('courseName').value.trim();
             const category = document.getElementById('courseCategorySelect').value;
-            
+            const startTime = document.getElementById('courseStartTime').value;
+            const endTime = document.getElementById('courseEndTime').value;
+
             if (!name || !category) {
                 showNotification('Lütfen zorunlu alanları doldurun!', 'error');
+                return;
+            }
+
+            if (!startTime || !endTime) {
+                showNotification('Lütfen kursun başlangıç ve bitiş saatlerini girin!', 'error');
+                return;
+            }
+
+            if (endTime <= startTime) {
+                showNotification('Bitiş saati başlangıç saatinden sonra olmalıdır!', 'error');
                 return;
             }
 
@@ -2480,6 +2527,8 @@
                 category,
                 duration: parseInt(document.getElementById('courseDuration').value) || 12,
                 capacity: parseInt(document.getElementById('courseCapacity').value) || 20,
+                startTime,
+                endTime,
                 ageGroup: document.getElementById('courseAgeGroup').value,
                 level: document.getElementById('courseLevel').value,
                 description: document.getElementById('courseDescription').value,
@@ -2557,6 +2606,8 @@
                     <div><strong>Süre:</strong> ${course.duration} hafta</div>
                     <div><strong>Kapasite:</strong> ${course.capacity}</div>
                     <div><strong>Kayıtlı:</strong> ${enrolledStudents.length}</div>
+                    <div><strong>Saat:</strong> ${course.startTime && course.endTime ? `${course.startTime} - ${course.endTime}` : '-'}
+                    </div>
                     <div><strong>Yaş Grubu:</strong> ${ageGroups[course.ageGroup] || '-'}</div>
                     <div><strong>Seviye:</strong> ${levels[course.level] || '-'}</div>
                 </div>
