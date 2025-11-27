@@ -1172,6 +1172,7 @@
                 let output = `${settings.municipalityName} - ${settings.departmentName}\n`;
                 output += `DERS PROGRAMI RAPORU\n`;
                 output += `Oluşturma Tarihi: ${formatDateTR(new Date())}\n`;
+                output += `Filtre: ${startDate || '---'} - ${endDate || '---'} | Kurs: ${courseId === 'all' ? 'Tümü' : (courses.find(c => c.id === courseId)?.name || '---')} | Eğitmen: ${instructor === 'all' ? 'Tümü' : instructor} | Atölye: ${workshop === 'all' ? 'Tümü' : workshop}\n`;
                 output += `--------------------------------------------------\n\n`;
 
                 let totalHours = 0;
@@ -1181,6 +1182,16 @@
                     const end = new Date(`1970-01-01T${s.endTime}`);
                     return (end - start) / (1000 * 60 * 60); // hours
                 };
+
+                const addToStats = (bucket, key, duration) => {
+                    if (!bucket[key]) bucket[key] = { count: 0, hours: 0 };
+                    bucket[key].count += 1;
+                    bucket[key].hours += duration;
+                };
+
+                const courseStats = {};
+                const instructorStats = {};
+                const workshopStats = {};
 
                 const grouped = {};
                 if (groupBy !== 'none') {
@@ -1192,8 +1203,12 @@
                             case 'instructor': key = s.instructor; break;
                             case 'day': key = formatDateTR(new Date(s.date)); break;
                         }
+                        const duration = getDuration(s);
                         if(!grouped[key]) grouped[key] = [];
                         grouped[key].push(s);
+                        addToStats(courseStats, course ? course.name : 'Silinmiş Kurs', duration);
+                        addToStats(instructorStats, s.instructor || 'Belirtilmemiş', duration);
+                        addToStats(workshopStats, s.workshop || 'Belirtilmemiş', duration);
                     });
 
                     for(const groupName in grouped) {
@@ -1213,6 +1228,9 @@
                         const course = courses.find(c => c.id === s.courseId);
                         const duration = getDuration(s);
                         totalHours += duration;
+                        addToStats(courseStats, course ? course.name : 'Silinmiş Kurs', duration);
+                        addToStats(instructorStats, s.instructor || 'Belirtilmemiş', duration);
+                        addToStats(workshopStats, s.workshop || 'Belirtilmemiş', duration);
                         output += `${formatDateTR(new Date(s.date))} (${getDayNameTR(new Date(s.date))}) | ${s.startTime}-${s.endTime} | ${course ? course.name : 'Silinmiş Kurs'} | ${s.instructor} | ${duration.toFixed(2)} saat\n`;
                     });
                 }
@@ -1220,6 +1238,23 @@
                 output += `--------------------------------------------------\n`;
                 output += `TOPLAM DERS SAATİ: ${totalHours.toFixed(2)}\n`;
                 output += `TOPLAM DERS SAYISI: ${filteredSessions.length}\n`;
+
+                const renderStats = (title, stats) => {
+                    output += `\n${title}\n`;
+                    const entries = Object.entries(stats).sort((a, b) => b[1].hours - a[1].hours);
+                    entries.forEach(([name, info]) => {
+                        output += `- ${name}: ${info.count} ders | ${info.hours.toFixed(2)} saat\n`;
+                    });
+                    if (!entries.length) {
+                        output += '- Veri bulunamadı\n';
+                    }
+                };
+
+                output += `\nDAĞILIM İSTATİSTİKLERİ\n`;
+                output += `----------------------\n`;
+                renderStats('Kurs Dağılımı', courseStats);
+                renderStats('Eğitmen Dağılımı', instructorStats);
+                renderStats('Atölye Dağılımı', workshopStats);
 
                 reportOutput.textContent = output;
             }
