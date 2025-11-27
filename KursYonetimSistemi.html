@@ -1850,7 +1850,8 @@
         }
 
         function isScheduleActiveOn(schedule, date) {
-            if (!schedule.active) return false;
+            const isActive = schedule.active !== false;
+            if (!isActive) return false;
 
             const targetDate = new Date(date);
             const start = schedule.startDate ? new Date(schedule.startDate) : null;
@@ -2306,6 +2307,12 @@
             } else {
                 data.schedules.push(scheduleData);
                 showNotification('Yeni ders eklendi!');
+            }
+
+            const focusDate = startDateValue ? new Date(startDateValue) : new Date();
+            if (!isNaN(focusDate)) {
+                currentMonth = focusDate.getMonth();
+                currentYear = focusDate.getFullYear();
             }
 
             saveData();
