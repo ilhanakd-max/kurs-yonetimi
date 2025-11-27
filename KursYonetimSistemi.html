@@ -1834,12 +1834,41 @@
             populateSelectOptions();
         }
 
+        function getScheduleEndDate(schedule) {
+            if (schedule.endDate) {
+                return new Date(schedule.endDate);
+            }
+
+            const course = data.courses.find(c => c.id === schedule.courseId);
+            if (schedule.startDate && course?.duration) {
+                const end = new Date(schedule.startDate);
+                end.setDate(end.getDate() + (course.duration * 7) - 1);
+                return end;
+            }
+
+            return null;
+        }
+
+        function isScheduleActiveOn(schedule, date) {
+            if (!schedule.active) return false;
+
+            const targetDate = new Date(date);
+            const start = schedule.startDate ? new Date(schedule.startDate) : null;
+            const end = getScheduleEndDate(schedule);
+
+            if (start && targetDate < start) return false;
+            if (end && targetDate > end) return false;
+
+            return true;
+        }
+
         function updateDashboard() {
             document.getElementById('totalCourses').textContent = data.courses.filter(c => c.active).length;
             document.getElementById('totalWorkshops').textContent = data.workshops.filter(w => w.active).length;
             document.getElementById('totalTeachers').textContent = data.teachers.filter(t => t.active).length;
             document.getElementById('totalStudents').textContent = data.students.filter(s => s.active).length;
-            document.getElementById('weeklyLessons').textContent = data.schedules.filter(s => s.active).length;
+            const now = new Date();
+            document.getElementById('weeklyLessons').textContent = data.schedules.filter(s => isScheduleActiveOn(s, now)).length;
 
             const today = new Date();
             const upcomingHolidays = data.holidays.filter(h => getNextHolidayDate(h, today)).length;
@@ -1851,8 +1880,9 @@
         }
 
         function renderTodayLessons() {
-            const today = new Date().getDay();
-            const todaySchedules = data.schedules.filter(s => s.active && parseInt(s.day) === today);
+            const todayDate = new Date();
+            const today = todayDate.getDay();
+            const todaySchedules = data.schedules.filter(s => isScheduleActiveOn(s, todayDate) && parseInt(s.day) === today);
             
             const container = document.getElementById('todayLessons');
             if (todaySchedules.length === 0) {
@@ -1926,16 +1956,21 @@
             });
 
             const times = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00'];
+            const today = new Date();
+            const weekStart = new Date(today);
+            weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7));
             
             times.forEach(time => {
                 html += `<div class="schedule-time">${time}</div>`;
                 for (let i = 0; i < 7; i++) {
                     const dayNum = i === 6 ? 0 : i + 1;
                     const isWeekendCell = dayNum === 0 || dayNum === 6;
-                    const schedules = data.schedules.filter(s => 
-                        s.active && 
-                        parseInt(s.day) === dayNum && 
-                        s.startTime <= time && 
+                    const cellDate = new Date(weekStart);
+                    cellDate.setDate(weekStart.getDate() + i);
+                    const schedules = data.schedules.filter(s =>
+                        isScheduleActiveOn(s, cellDate) &&
+                        parseInt(s.day) === dayNum &&
+                        s.startTime <= time &&
                         s.endTime > time
                     );
                     
@@ -1985,13 +2020,13 @@
                 const isWeekendDay = isWeekend(date);
                 const isHolidayDay = isHoliday(date);
                 const dayOfWeek = date.getDay();
-                
+
                 let classes = 'calendar-day';
                 if (isToday) classes += ' today';
                 if (isWeekendDay) classes += ' weekend';
                 if (isHolidayDay) classes += ' holiday';
-                
-                const daySchedules = data.schedules.filter(s => s.active && parseInt(s.day) === dayOfWeek);
+
+                const daySchedules = data.schedules.filter(s => isScheduleActiveOn(s, date) && parseInt(s.day) === dayOfWeek);
                 
                 html += `<div class="${classes}">
                     <div class="day-number">${day}</div>`;
@@ -2072,16 +2107,22 @@
             const startHour = parseInt(data.settings.startTime.split(':')[0]);
             const endHour = parseInt(data.settings.endTime.split(':')[0]);
             
+            const today = new Date();
+            const weekStart = new Date(today);
+            weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+
             for (let hour = startHour; hour < endHour; hour++) {
                 const time = `${String(hour).padStart(2, '0')}:00`;
                 html += `<div class="schedule-time">${time}</div>`;
-                
+
                 for (let i = 0; i < 7; i++) {
                     const dayNum = i === 6 ? 0 : i + 1;
                     const isWeekendDay = dayNum === 0 || dayNum === 6;
-                    
+                    const cellDate = new Date(weekStart);
+                    cellDate.setDate(weekStart.getDate() + i);
+
                     const schedules = data.schedules.filter(s => {
-                        if (!s.active || parseInt(s.day) !== dayNum) return false;
+                        if (!isScheduleActiveOn(s, cellDate) || parseInt(s.day) !== dayNum) return false;
                         const startHourSched = parseInt(s.startTime.split(':')[0]);
                         const endHourSched = parseInt(s.endTime.split(':')[0]);
                         return hour >= startHourSched && hour < endHourSched;
@@ -2160,7 +2201,8 @@
                     document.getElementById('scheduleStartTime').value = schedule.startTime;
                     document.getElementById('scheduleEndTime').value = schedule.endTime;
                     document.getElementById('scheduleStartDate').value = schedule.startDate || '';
-                    document.getElementById('scheduleEndDate').value = schedule.endDate || '';
+                    const calculatedEnd = getScheduleEndDate(schedule);
+                    document.getElementById('scheduleEndDate').value = schedule.endDate || (calculatedEnd ? calculatedEnd.toISOString().split('T')[0] : '');
                     document.getElementById('scheduleNotes').value = schedule.notes || '';
                     document.getElementById('scheduleActive').checked = schedule.active;
                 }
@@ -2231,6 +2273,18 @@
                 return;
             }
 
+            const startDateValue = document.getElementById('scheduleStartDate').value;
+            let endDateValue = document.getElementById('scheduleEndDate').value;
+
+            if (!endDateValue && startDateValue) {
+                const course = data.courses.find(c => c.id === courseId);
+                if (course?.duration) {
+                    const autoEnd = new Date(startDateValue);
+                    autoEnd.setDate(autoEnd.getDate() + (course.duration * 7) - 1);
+                    endDateValue = autoEnd.toISOString().split('T')[0];
+                }
+            }
+
             const scheduleData = {
                 id: id || generateId(),
                 courseId,
@@ -2239,8 +2293,8 @@
                 day,
                 startTime,
                 endTime,
-                startDate: document.getElementById('scheduleStartDate').value,
-                endDate: document.getElementById('scheduleEndDate').value,
+                startDate: startDateValue,
+                endDate: endDateValue,
                 notes: document.getElementById('scheduleNotes').value,
                 active: document.getElementById('scheduleActive').checked
             };
@@ -2422,13 +2476,22 @@
         }
 
         function deleteCourse(id) {
-            const hasSchedules = data.schedules.some(s => s.courseId === id);
-            if (hasSchedules) {
-                showNotification('Bu kursa ait dersler var! Önce dersleri silin.', 'error');
-                return;
-            }
-            
-            if (confirm('Bu kursu silmek istediğinizden emin misiniz?')) {
+            const course = data.courses.find(c => c.id === id);
+            if (!course) return;
+
+            const relatedSchedules = data.schedules.filter(s => s.courseId === id);
+            const enrolledStudents = data.students.filter(s => s.courses?.includes(id));
+
+            const confirmMessage = relatedSchedules.length > 0 || enrolledStudents.length > 0
+                ? 'Bu kursa ait dersler ve öğrenci kayıtları silinecek. Devam etmek istiyor musunuz?'
+                : 'Bu kursu silmek istediğinizden emin misiniz?';
+
+            if (confirm(confirmMessage)) {
+                data.schedules = data.schedules.filter(s => s.courseId !== id);
+                data.students = data.students.map(student => ({
+                    ...student,
+                    courses: (student.courses || []).filter(cid => cid !== id)
+                }));
                 data.courses = data.courses.filter(c => c.id !== id);
                 saveData();
                 showNotification('Kurs silindi!');
