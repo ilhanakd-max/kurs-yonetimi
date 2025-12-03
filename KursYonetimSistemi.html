@@ -758,6 +758,19 @@
             font-size: 0.75rem;
         }
 
+        .link-btn {
+            background: none;
+            border: none;
+            color: var(--primary-color);
+            font-weight: 600;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .link-btn:hover {
+            text-decoration: underline;
+        }
+
         /* Progress Bar */
         .progress-bar {
             height: 8px;
@@ -1953,6 +1966,7 @@
         let currentView = 'calendar';
         let currentUser = null;
         let activeAttendanceCourseId = null;
+        let attendanceDetailsState = {};
 
         // ==================== Initialize ====================
         document.addEventListener('DOMContentLoaded', function() {
@@ -2427,17 +2441,42 @@
                         <tbody>
                             ${courses.map(c => {
                                 const summary = getAttendanceSummary(c.id, todayStr);
+                                const state = attendanceDetailsState[c.id] || {};
+                                const selectedDate = state.date || todayStr;
                                 return `<tr>
-                                    <td><strong>${c.name}</strong></td>
+                                    <td><button class="link-btn" onclick="toggleAttendanceDetails('${c.id}')">${c.name}</button></td>
                                     <td>${summary.total}</td>
                                     <td>${summary.absent}/${summary.excused}/${summary.medical}</td>
                                     <td><button class="btn btn-sm btn-primary" onclick="openAttendanceModal('${c.id}')">Yoklama Gir</button></td>
+                                </tr>
+                                <tr id="attendance-detail-${c.id}" style="display: ${state.expanded ? 'table-row' : 'none'}; background:#f9fafb;">
+                                    <td colspan="4">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem; gap:1rem;">
+                                            <div>
+                                                <strong>Öğrenci Listesi</strong>
+                                                <div style="font-size:0.9rem; color:#6b7280;">Kurs öğrencilerini görüntüleyin ve yoklama durumlarını güncelleyin.</div>
+                                            </div>
+                                            <div style="display:flex; align-items:center; gap:0.5rem;">
+                                                <label for="inlineDate-${c.id}" style="font-size:0.9rem; color:#4b5563;">Tarih</label>
+                                                <input type="date" id="inlineDate-${c.id}" value="${selectedDate}" onchange="updateAttendanceDetailDate('${c.id}', this.value)">
+                                                <button class="btn btn-sm btn-primary" onclick="saveInlineAttendance('${c.id}')">Kaydet</button>
+                                            </div>
+                                        </div>
+                                        <div id="attendance-students-${c.id}" class="table-container" style="max-height:260px; overflow:auto;"></div>
+                                    </td>
                                 </tr>`;
                             }).join('')}
                         </tbody>
                     </table>
                 </div>
             `;
+
+            courses.forEach(c => {
+                const state = attendanceDetailsState[c.id];
+                if (state?.expanded) {
+                    renderInlineAttendanceStudents(c.id, state.date || todayStr);
+                }
+            });
         }
 
         function openAttendanceModal(courseId) {
@@ -2461,6 +2500,118 @@
             }
             renderAttendanceStudents();
             openModal('attendanceModal');
+        }
+
+        function toggleAttendanceDetails(courseId) {
+            if (!currentUser) {
+                showNotification('Önce giriş yapın.', 'error');
+                return;
+            }
+            if (!canAccessCourse(courseId)) {
+                showNotification('Bu kurs için yetkiniz yok.', 'error');
+                return;
+            }
+
+            const currentState = attendanceDetailsState[courseId] || {};
+            const newExpanded = !currentState.expanded;
+            attendanceDetailsState[courseId] = {
+                ...currentState,
+                expanded: newExpanded,
+                date: currentState.date || formatDateForInput(new Date())
+            };
+
+            const row = document.getElementById(`attendance-detail-${courseId}`);
+            if (row) {
+                row.style.display = newExpanded ? 'table-row' : 'none';
+            }
+
+            if (newExpanded) {
+                renderInlineAttendanceStudents(courseId, attendanceDetailsState[courseId].date);
+            }
+        }
+
+        function updateAttendanceDetailDate(courseId, value) {
+            const dateValue = value || formatDateForInput(new Date());
+            attendanceDetailsState[courseId] = {
+                ...(attendanceDetailsState[courseId] || {}),
+                date: dateValue,
+                expanded: true
+            };
+            renderInlineAttendanceStudents(courseId, dateValue);
+        }
+
+        function renderInlineAttendanceStudents(courseId, date) {
+            if (!courseId) return;
+            const container = document.getElementById(`attendance-students-${courseId}`);
+            if (!container) return;
+
+            const students = data.students.filter(s => s.courses && s.courses.includes(courseId));
+            const records = data.attendanceRecords.filter(r => r.courseId === courseId && r.date === date);
+
+            if (students.length === 0) {
+                container.innerHTML = '<p style="padding:0.5rem; color:#7f8c8d;">Bu kursa ait kayıtlı öğrenci bulunmuyor.</p>';
+                return;
+            }
+
+            const options = [
+                { value: 'present', label: 'Geldi' },
+                { value: 'absent', label: 'Yok' },
+                { value: 'excused', label: 'Mazeretli' },
+                { value: 'medical', label: 'Raporlu' }
+            ];
+
+            container.innerHTML = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Öğrenci</th>
+                            <th>İletişim</th>
+                            <th>Durum</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${students.map(s => {
+                            const record = records.find(r => r.studentId === s.id);
+                            const status = record ? record.status : 'present';
+                            return `
+                                <tr>
+                                    <td>${s.name}</td>
+                                    <td>${s.phone || '-'}</td>
+                                    <td>
+                                        <select data-student="${s.id}">
+                                            ${options.map(o => `<option value="${o.value}" ${status === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
+                                        </select>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function saveInlineAttendance(courseId) {
+            const state = attendanceDetailsState[courseId] || {};
+            const date = state.date || formatDateForInput(new Date());
+            const container = document.getElementById(`attendance-students-${courseId}`);
+            if (!container) return;
+
+            const selects = container.querySelectorAll('select[data-student]');
+            data.attendanceRecords = data.attendanceRecords.filter(r => !(r.courseId === courseId && r.date === date));
+
+            selects.forEach(sel => {
+                data.attendanceRecords.push({
+                    id: generateId(),
+                    courseId,
+                    studentId: sel.dataset.student,
+                    date,
+                    status: sel.value
+                });
+            });
+
+            saveData();
+            showNotification('Yoklama kaydedildi!');
+            renderCourseAttendanceList();
         }
 
         function renderAttendanceStudents() {
