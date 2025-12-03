@@ -792,6 +792,53 @@
         .notification.warning {
             background: var(--warning-color);
         }
+        /* Live Lessons Panel */
+        .live-lessons-panel {
+            background: #f8f9fa;
+            border-radius: var(--border-radius);
+            padding: 0.75rem 1rem;
+            border: 1px dashed #dcdde1;
+            margin-bottom: 0.5rem;
+        }
+
+        .live-lessons-item {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .live-lessons-item:last-child {
+            border-bottom: none;
+        }
+
+        .live-lessons-title {
+            font-weight: 600;
+            margin-bottom: 0.15rem;
+        }
+
+        .live-lessons-meta {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+        }
+
+        .live-lessons-status {
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-block;
+            padding: 0.15rem 0.6rem;
+            border-radius: 999px;
+            margin-bottom: 0.25rem;
+        }
+
+        .live-now {
+            background: rgba(39, 174, 96, 0.12);
+            color: #27ae60;
+        }
+
+        .live-upcoming {
+            background: rgba(243, 156, 18, 0.12);
+            color: #f39c12;
+        }
+        
     </style>
 </head>
 <body>
@@ -893,6 +940,7 @@
                 <div class="card-header">
                     <h2 class="card-title">🔔 Bugünün Dersleri</h2>
                 </div>
+                <div id="liveLessonsPanel" style="margin-bottom: 0.75rem;"></div>
                 <div id="todayLessons"></div>
             </div>
 
@@ -1689,6 +1737,7 @@
             initializeDefaultHolidays();
             updateDateTime();
             setInterval(updateDateTime, 1000);
+        setInterval(renderLiveLessonsPanel, 60000);
             renderAll();
             setupColorPickers();
         });
@@ -1905,6 +1954,7 @@
             document.getElementById('upcomingHolidays').textContent = upcomingHolidays;
 
             renderTodayLessons();
+            renderLiveLessonsPanel();
             renderUpcomingHolidays();
             renderWeeklyOverview();
         }
@@ -1949,7 +1999,93 @@
             `;
         }
 
-        function renderUpcomingHolidays() {
+        
+        function parseTimeToDate(timeStr, baseDate) {
+            if (!timeStr) return null;
+            const parts = timeStr.split(':').map(Number);
+            if (parts.length < 2 || parts.some(isNaN)) return null;
+            const d = new Date(baseDate);
+            d.setHours(parts[0], parts[1], 0, 0);
+            return d;
+        }
+
+        function formatMinuteDiff(totalMinutes) {
+            const minutes = Math.round(Math.abs(totalMinutes));
+            if (minutes < 1) return 'birkaç saniye';
+            const hours = Math.floor(minutes / 60);
+            const mins = minutes % 60;
+            const parts = [];
+            if (hours > 0) parts.push(hours + ' saat');
+            if (mins > 0) parts.push(mins + ' dakika');
+            return parts.join(' ');
+        }
+
+        function renderLiveLessonsPanel() {
+            const container = document.getElementById('liveLessonsPanel');
+            if (!container) return;
+
+            const now = new Date();
+            const today = now.getDay();
+
+            const todaySchedules = data.schedules.filter(s => 
+                isScheduleActiveOn(s, now) && parseInt(s.day) === today
+            );
+
+            if (todaySchedules.length === 0) {
+                container.innerHTML = '<p style="color: #7f8c8d;">Bugün için planlanmış ders bulunmamaktadır.</p>';
+                return;
+            }
+
+            const items = [];
+
+            todaySchedules.forEach(s => {
+                const start = parseTimeToDate(s.startTime, now);
+                const end = parseTimeToDate(s.endTime, now);
+                if (!start || !end) return;
+
+                const course = data.courses.find(c => c.id === s.courseId);
+                const teacher = data.teachers.find(t => t.id === s.teacherId);
+                const workshop = data.workshops.find(w => w.id === s.workshopId);
+
+                if (now >= start && now < end) {
+                    const diffMinutes = (end - now) / 60000;
+                    items.push({
+                        sortKey: 0 + start.getTime(),
+                        html: '<div class="live-lessons-item">' +
+                              '<div class="live-lessons-status live-now">ŞU AN DEVAM EDİYOR</div>' +
+                              '<div class="live-lessons-title">' + (course ? course.name : 'Bilinmeyen Kurs') + ' (' + s.startTime + ' - ' + s.endTime + ')</div>' +
+                              '<div class="live-lessons-meta">Eğitmen: ' + (teacher ? teacher.name : '-') + ' • Atölye: ' + (workshop ? workshop.name : '-') + '</div>' +
+                              '<div class="live-lessons-meta" style="color:#27ae60; margin-top:0.15rem;">Bitişine ' + formatMinuteDiff(diffMinutes) + ' kaldı.</div>' +
+                              '</div>'
+                    });
+                } else if (start > now) {
+                    const diffMinutes = (start - now) / 60000;
+                    if (diffMinutes <= 180) { // 3 saat içinde başlayacak olanlar
+                        items.push({
+                            sortKey: 1 + start.getTime(),
+                            html: '<div class="live-lessons-item">' +
+                                  '<div class="live-lessons-status live-upcoming">' + formatMinuteDiff(diffMinutes) + ' sonra başlayacak</div>' +
+                                  '<div class="live-lessons-title">' + (course ? course.name : 'Bilinmeyen Kurs') + ' (' + s.startTime + ' - ' + s.endTime + ')</div>' +
+                                  '<div class="live-lessons-meta">Eğitmen: ' + (teacher ? teacher.name : '-') + ' • Atölye: ' + (workshop ? workshop.name : '-') + '</div>' +
+                                  '</div>'
+                        });
+                    }
+                }
+            });
+
+            items.sort((a, b) => a.sortKey - b.sortKey);
+
+            if (items.length === 0) {
+                container.innerHTML = '<p style="color: #7f8c8d;">Şu anda devam eden veya yakında başlayacak ders bulunmamaktadır.</p>';
+                return;
+            }
+
+            container.innerHTML = '<div class="live-lessons-panel">' +
+                                  items.map(i => i.html).join('') +
+                                  '</div>';
+        }
+
+function renderUpcomingHolidays() {
             const container = document.getElementById('upcomingHolidaysList');
             const today = new Date();
 
