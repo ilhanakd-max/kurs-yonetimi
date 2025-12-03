@@ -31,6 +31,71 @@
             line-height: 1.6;
         }
 
+        .auth-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            background: rgba(255,255,255,0.15);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius);
+        }
+
+        .auth-badge {
+            background: rgba(0,0,0,0.15);
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.9rem;
+            color: var(--white);
+        }
+
+        .auth-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .auth-locked {
+            display: none;
+        }
+
+        .auth-locked.active {
+            display: block;
+            text-align: center;
+            background: #fef3c7;
+            color: #92400e;
+            padding: 0.75rem 1rem;
+            border: 1px solid #fcd34d;
+            border-radius: var(--border-radius);
+            margin-bottom: 1rem;
+        }
+
+        .login-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+
+        .login-card {
+            background: var(--white);
+            padding: 2rem;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            width: min(420px, 90vw);
+        }
+
+        .login-card h2 {
+            margin-bottom: 0.5rem;
+            color: var(--primary-color);
+        }
+
+        .login-card p {
+            color: #6b7280;
+            margin-bottom: 1.25rem;
+        }
+
         /* Header */
         .header {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
@@ -853,11 +918,47 @@
                 <p>Kültür Müdürlüğü - Kurs Yönetim Sistemi</p>
             </div>
         </div>
-        <div class="header-date">
-            <div id="currentDate"></div>
-            <div id="currentTime"></div>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <div class="header-date">
+                <div id="currentDate"></div>
+                <div id="currentTime"></div>
+            </div>
+            <div class="auth-bar" id="authBar">
+                <div>
+                    <div style="font-weight: 600;">Hoş geldiniz</div>
+                    <div id="authUserName" style="font-size: 0.9rem; opacity: 0.9;">Giriş yapılmadı</div>
+                </div>
+                <span class="auth-badge" id="authUserRole">Yetki: Kapalı</span>
+                <div class="auth-actions">
+                    <button class="btn btn-secondary btn-sm" id="loginAction" onclick="openLogin()">Giriş Yap</button>
+                    <button class="btn btn-warning btn-sm" id="logoutAction" style="display:none;" onclick="logout()">Çıkış Yap</button>
+                </div>
+            </div>
         </div>
     </header>
+
+    <!-- Login Overlay -->
+    <div class="login-overlay" id="loginOverlay" style="display:none;">
+        <div class="login-card">
+            <h2>🔐 Kullanıcı Girişi</h2>
+            <p>Sisteme erişmek için admin veya öğretmen hesabınızla giriş yapın.</p>
+            <div class="form-group">
+                <label>Kullanıcı Adı</label>
+                <input type="text" id="loginUsername" placeholder="Kullanıcı adı">
+            </div>
+            <div class="form-group">
+                <label>Şifre</label>
+                <input type="password" id="loginPassword" placeholder="Şifre">
+            </div>
+            <div class="btn-group" style="margin-top: 1rem; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="closeLogin()">İptal</button>
+                <button class="btn btn-primary" onclick="handleLogin()">Giriş Yap</button>
+            </div>
+            <div style="margin-top: 1rem; font-size: 0.9rem; color: #6b7280;">
+                Yetkili kullanıcılar tarafından yeni admin veya öğretmen hesabı oluşturulabilir.
+            </div>
+        </div>
+    </div>
 
     <!-- Navigation -->
     <nav class="nav-container">
@@ -896,6 +997,10 @@
     <main class="main-content">
         <!-- Notification Container -->
         <div class="notification-container" id="notificationContainer"></div>
+
+        <div class="auth-locked" id="authLockedMessage">
+            🔒 İşlem yapabilmek için lütfen admin veya öğretmen hesabı ile giriş yapın.
+        </div>
 
         <!-- Dashboard Tab -->
         <div id="dashboard" class="tab-content active">
@@ -946,6 +1051,14 @@
 
             <div class="card">
                 <div class="card-header">
+                    <h2 class="card-title">✅ Kurs Yoklama Takibi</h2>
+                    <span style="font-size: 0.9rem; color: #6b7280;">Kurs adına tıklayarak hızlı yoklama girin.</span>
+                </div>
+                <div id="courseAttendanceList"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
                     <h2 class="card-title">🎌 Yaklaşan Tatiller</h2>
                 </div>
                 <div id="upcomingHolidaysList"></div>
@@ -958,7 +1071,7 @@
                 <div class="card-header">
                     <h2 class="card-title">📅 Ders Programı</h2>
                     <div class="btn-group">
-                        <button class="btn btn-success" onclick="openScheduleModal()">+ Yeni Ders Ekle</button>
+                        <button class="btn btn-success admin-only" onclick="openScheduleModal()">+ Yeni Ders Ekle</button>
                         <button class="btn btn-secondary" onclick="toggleView()">Görünümü Değiştir</button>
                     </div>
                 </div>
@@ -1018,7 +1131,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title">📚 Kurs Yönetimi</h2>
-                    <button class="btn btn-success" onclick="openCourseModal()">+ Yeni Kurs Ekle</button>
+                    <button class="btn btn-success admin-only" onclick="openCourseModal()">+ Yeni Kurs Ekle</button>
                 </div>
                 <div class="search-filter">
                     <div class="search-box">
@@ -1053,7 +1166,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title">🏢 Atölye Yönetimi</h2>
-                    <button class="btn btn-success" onclick="openWorkshopModal()">+ Yeni Atölye Ekle</button>
+                    <button class="btn btn-success admin-only" onclick="openWorkshopModal()">+ Yeni Atölye Ekle</button>
                 </div>
                 <div class="search-filter">
                     <div class="search-box">
@@ -1085,7 +1198,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title">👨‍🏫 Eğitmen Yönetimi</h2>
-                    <button class="btn btn-success" onclick="openTeacherModal()">+ Yeni Eğitmen Ekle</button>
+                    <button class="btn btn-success admin-only" onclick="openTeacherModal()">+ Yeni Eğitmen Ekle</button>
                 </div>
                 <div class="search-filter">
                     <div class="search-box">
@@ -1152,7 +1265,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title">🎌 Resmi Tatil Yönetimi</h2>
-                    <button class="btn btn-success" onclick="openHolidayModal()">+ Yeni Tatil Ekle</button>
+                    <button class="btn btn-success admin-only" onclick="openHolidayModal()">+ Yeni Tatil Ekle</button>
                 </div>
                 <div class="alert alert-info">
                     ℹ️ Hafta sonları (Cumartesi-Pazar) otomatik olarak işaretlenir. Yinelenen resmi tatiller her yıl otomatik hesaplanır.
@@ -1269,10 +1382,32 @@
                 </div>
             </div>
 
+            <div class="card admin-only-section">
+                <div class="card-header">
+                    <h2 class="card-title">👤 Kullanıcı Yönetimi</h2>
+                    <button class="btn btn-success btn-sm admin-only" onclick="openUserModal()">+ Yeni Kullanıcı</button>
+                </div>
+                <div class="alert alert-info">Admin kullanıcılar yeni admin/öğretmen hesapları oluşturabilir, şifre güncelleyebilir.</div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Kullanıcı Adı</th>
+                                <th>Rol</th>
+                                <th>Bağlı Eğitmen</th>
+                                <th>Durum</th>
+                                <th>İşlemler</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title">📂 Kategori Yönetimi</h2>
-                    <button class="btn btn-success btn-sm" onclick="openCategoryModal()">+ Yeni Kategori</button>
+                    <button class="btn btn-success btn-sm admin-only" onclick="openCategoryModal()">+ Yeni Kategori</button>
                 </div>
                 <div id="categoriesList"></div>
             </div>
@@ -1282,10 +1417,10 @@
                     <h2 class="card-title">💾 Veri Yönetimi</h2>
                 </div>
                 <div class="btn-group">
-                    <button class="btn btn-primary" onclick="exportAllData()">📤 Verileri Dışa Aktar</button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">📥 Verileri İçe Aktar</button>
+                    <button class="btn btn-primary admin-only" onclick="exportAllData()">📤 Verileri Dışa Aktar</button>
+                    <button class="btn btn-secondary admin-only" onclick="document.getElementById('importFile').click()">📥 Verileri İçe Aktar</button>
                     <input type="file" id="importFile" style="display:none" accept=".json" onchange="importAllData(event)">
-                    <button class="btn btn-danger" onclick="clearAllData()">🗑️ Tüm Verileri Sil</button>
+                    <button class="btn btn-danger admin-only" onclick="clearAllData()">🗑️ Tüm Verileri Sil</button>
                 </div>
             </div>
 
@@ -1627,6 +1762,90 @@
         </div>
     </div>
 
+    <!-- Attendance Modal -->
+    <div class="modal-overlay" id="attendanceModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="attendanceModalTitle">Yoklama</h3>
+                <button class="modal-close" onclick="closeModal('attendanceModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Tarih</label>
+                        <input type="date" id="attendanceDate" onchange="renderAttendanceStudents()">
+                    </div>
+                    <div class="form-group">
+                        <label>Kurs</label>
+                        <input type="text" id="attendanceCourseName" disabled>
+                    </div>
+                </div>
+                <div class="alert alert-info" style="margin: 0.5rem 0 1rem 0;">Öğrencinin durumunu "Yok", "Mazeretli" veya "Raporlu" olarak işaretleyin. İşaretlenmeyen öğrenciler otomatik olarak "Geldi" kabul edilir.</div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Öğrenci</th>
+                                <th>Telefon</th>
+                                <th>Durum</th>
+                            </tr>
+                        </thead>
+                        <tbody id="attendanceTable"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('attendanceModal')">İptal</button>
+                <button class="btn btn-primary" onclick="saveAttendanceRecords()">Yoklamayı Kaydet</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Modal -->
+    <div class="modal-overlay" id="userModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="userModalTitle">Yeni Kullanıcı</h3>
+                <button class="modal-close" onclick="closeModal('userModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="userForm">
+                    <input type="hidden" id="userId">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Kullanıcı Adı *</label>
+                            <input type="text" id="username" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Şifre *</label>
+                            <input type="password" id="userPassword" placeholder="Yeni şifre">
+                        </div>
+                        <div class="form-group">
+                            <label>Rol</label>
+                            <select id="userRole" onchange="toggleUserTeacherField()">
+                                <option value="admin">Admin</option>
+                                <option value="teacher">Öğretmen</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="userTeacherField" style="display:none;">
+                            <label>Bağlı Eğitmen</label>
+                            <select id="userTeacher"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="userActive" checked> Aktif Hesap
+                        </label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('userModal')">İptal</button>
+                <button class="btn btn-primary" onclick="saveUser()">Kaydet</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Holiday Modal -->
     <div class="modal-overlay" id="holidayModal">
         <div class="modal">
@@ -1715,6 +1934,8 @@
             students: [],
             schedules: [],
             holidays: [],
+            users: [],
+            attendanceRecords: [],
             categories: ['Müzik', 'Resim', 'El Sanatları', 'Dans', 'Spor', 'Dil', 'Bilgisayar', 'Diğer'],
             settings: {
                 orgName: 'Çeşme Belediyesi Kültür Müdürlüğü',
@@ -1730,16 +1951,22 @@
         let currentMonth = new Date().getMonth();
         let currentYear = new Date().getFullYear();
         let currentView = 'calendar';
+        let currentUser = null;
+        let activeAttendanceCourseId = null;
 
         // ==================== Initialize ====================
         document.addEventListener('DOMContentLoaded', function() {
             loadData();
             initializeDefaultHolidays();
+            initializeDefaultUsers();
+            ensureAttendanceStorage();
+            loadSession();
             updateDateTime();
             setInterval(updateDateTime, 1000);
         setInterval(renderLiveLessonsPanel, 60000);
             renderAll();
             setupColorPickers();
+            applyAuthState();
         });
 
         function loadData() {
@@ -1747,6 +1974,9 @@
             if (saved) {
                 data = { ...data, ...JSON.parse(saved) };
             }
+
+            if (!Array.isArray(data.users)) data.users = [];
+            if (!Array.isArray(data.attendanceRecords)) data.attendanceRecords = [];
         }
 
         function saveData() {
@@ -1765,6 +1995,27 @@
                     { id: 7, name: 'Cumhuriyet Bayramı', startDate: '10-29', endDate: '10-29', recurring: true, description: '' }
                 ];
                 saveData();
+            }
+        }
+
+        function initializeDefaultUsers() {
+            if (!data.users.some(u => u.username === 'admin')) {
+                data.users.push({
+                    id: 'user-admin',
+                    username: 'admin',
+                    password: 'admin123',
+                    role: 'admin',
+                    active: true,
+                    createdAt: new Date().toISOString(),
+                    teacherId: ''
+                });
+                saveData();
+            }
+        }
+
+        function ensureAttendanceStorage() {
+            if (!Array.isArray(data.attendanceRecords)) {
+                data.attendanceRecords = [];
             }
         }
 
@@ -1840,6 +2091,154 @@
             return date.toLocaleDateString('tr-TR');
         }
 
+        // ==================== Authentication & Authorization ====================
+        function isAdmin() {
+            return currentUser && currentUser.role === 'admin';
+        }
+
+        function isTeacher() {
+            return currentUser && currentUser.role === 'teacher';
+        }
+
+        function loadSession() {
+            const savedId = localStorage.getItem('cesmeKursCurrentUser');
+            if (savedId) {
+                const user = data.users.find(u => u.id === savedId && u.active);
+                if (user) {
+                    currentUser = user;
+                } else {
+                    localStorage.removeItem('cesmeKursCurrentUser');
+                }
+            }
+        }
+
+        function persistSession() {
+            if (currentUser?.id) {
+                localStorage.setItem('cesmeKursCurrentUser', currentUser.id);
+            } else {
+                localStorage.removeItem('cesmeKursCurrentUser');
+            }
+        }
+
+        function openLogin() {
+            document.getElementById('loginOverlay').style.display = 'flex';
+            document.getElementById('loginUsername').focus();
+        }
+
+        function closeLogin() {
+            document.getElementById('loginOverlay').style.display = 'none';
+        }
+
+        function handleLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+
+            const user = data.users.find(u => u.username === username && u.password === password && u.active);
+            if (!user) {
+                showNotification('Kullanıcı adı veya şifre hatalı ya da pasif hesap!', 'error');
+                return;
+            }
+
+            currentUser = user;
+            persistSession();
+            applyAuthState();
+            closeLogin();
+            renderAll();
+            showNotification('Giriş başarılı!');
+        }
+
+        function logout() {
+            currentUser = null;
+            persistSession();
+            applyAuthState();
+            showNotification('Oturum kapatıldı', 'warning');
+        }
+
+        function applyAuthState() {
+            const mainContent = document.querySelector('main');
+            const overlay = document.getElementById('loginOverlay');
+            const locked = document.getElementById('authLockedMessage');
+            const loginBtn = document.getElementById('loginAction');
+            const logoutBtn = document.getElementById('logoutAction');
+
+            if (!currentUser) {
+                mainContent.style.display = 'none';
+                overlay.style.display = 'flex';
+                locked.classList.add('active');
+                loginBtn.style.display = '';
+                logoutBtn.style.display = 'none';
+                document.getElementById('authUserName').textContent = 'Giriş yapılmadı';
+                document.getElementById('authUserRole').textContent = 'Yetki: Kapalı';
+            } else {
+                mainContent.style.display = '';
+                overlay.style.display = 'none';
+                locked.classList.remove('active');
+                loginBtn.style.display = 'none';
+                logoutBtn.style.display = '';
+                document.getElementById('authUserName').textContent = currentUser.username;
+                document.getElementById('authUserRole').textContent = `Yetki: ${currentUser.role === 'admin' ? 'Admin' : 'Öğretmen'}`;
+                if (!document.querySelector('.tab-content.active')) {
+                    const firstTabButton = document.querySelector('.nav-tab');
+                    showTab('dashboard', firstTabButton);
+                }
+            }
+
+            applyRolePermissions();
+        }
+
+        function applyRolePermissions() {
+            const adminElements = document.querySelectorAll('.admin-only');
+            adminElements.forEach(el => {
+                el.style.display = isAdmin() ? '' : 'none';
+            });
+
+            document.querySelectorAll('.admin-only-section').forEach(el => {
+                el.style.display = isAdmin() ? '' : 'none';
+            });
+
+            if (!currentUser) {
+                document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+                document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+            }
+        }
+
+        function getTeacherForCurrentUser() {
+            if (!isTeacher()) return null;
+            return data.teachers.find(t => t.id === currentUser.teacherId);
+        }
+
+        function getAccessibleCourseIds() {
+            if (isAdmin()) return data.courses.map(c => c.id);
+            const teacherId = currentUser?.teacherId;
+            if (!teacherId) return [];
+            const courseSet = new Set();
+            data.schedules.forEach(s => {
+                if (s.teacherId === teacherId) {
+                    courseSet.add(s.courseId);
+                }
+            });
+            return Array.from(courseSet);
+        }
+
+        function getAccessibleCourses(includeInactive = false) {
+            const ids = getAccessibleCourseIds();
+            const courses = includeInactive ? data.courses : data.courses.filter(c => c.active);
+            return isAdmin() ? courses : courses.filter(c => ids.includes(c.id));
+        }
+
+        function canAccessCourse(courseId) {
+            if (!currentUser) return false;
+            return isAdmin() || getAccessibleCourseIds().includes(courseId);
+        }
+
+        function requireAdmin(message = 'Bu işlem için admin yetkisi gerekli!') {
+            if (!isAdmin()) {
+                showNotification(message, 'error');
+                return false;
+            }
+            return true;
+        }
+
         function isWeekend(date) {
             const day = date.getDay();
             return day === 0 || day === 6;
@@ -1905,8 +2304,10 @@
             renderStudentsTable();
             renderHolidaysTable();
             renderCategories();
+            renderUsersTable();
             populateFilters();
             populateSelectOptions();
+            renderCourseAttendanceList();
         }
 
         function getScheduleEndDate(schedule) {
@@ -1957,6 +2358,160 @@
             renderLiveLessonsPanel();
             renderUpcomingHolidays();
             renderWeeklyOverview();
+            renderCourseAttendanceList();
+        }
+
+        // ==================== Attendance Management ====================
+        function getAttendanceSummary(courseId, dateStr = null) {
+            const students = data.students.filter(s => s.courses && s.courses.includes(courseId));
+            const records = data.attendanceRecords.filter(r => r.courseId === courseId && (!dateStr || r.date === dateStr));
+
+            const summary = { present: 0, absent: 0, excused: 0, medical: 0, total: students.length };
+            students.forEach(student => {
+                const record = records.find(r => r.studentId === student.id);
+                const status = record ? record.status : 'present';
+                if (summary[status] !== undefined) summary[status]++;
+            });
+            summary.present = Math.max(0, summary.total - (summary.absent + summary.excused + summary.medical));
+            return summary;
+        }
+
+        function renderCourseAttendanceList() {
+            const container = document.getElementById('courseAttendanceList');
+            if (!container) return;
+
+            if (!currentUser) {
+                container.innerHTML = '<p style="color:#7f8c8d; padding: 0.5rem;">Kurs yoklaması için giriş yapın.</p>';
+                return;
+            }
+
+            const courses = getAccessibleCourses();
+            if (courses.length === 0) {
+                container.innerHTML = '<p style="color:#7f8c8d; padding: 0.5rem;">Yetkili olduğunuz kurs bulunamadı.</p>';
+                return;
+            }
+
+            const todayStr = formatDateForInput(new Date());
+            container.innerHTML = `
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Kurs</th>
+                                <th>Kayıtlı Öğrenci</th>
+                                <th>Bugün (Yok/Mazeretli/Raporlu)</th>
+                                <th>İşlem</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${courses.map(c => {
+                                const summary = getAttendanceSummary(c.id, todayStr);
+                                return `<tr>
+                                    <td><strong>${c.name}</strong></td>
+                                    <td>${summary.total}</td>
+                                    <td>${summary.absent}/${summary.excused}/${summary.medical}</td>
+                                    <td><button class="btn btn-sm btn-primary" onclick="openAttendanceModal('${c.id}')">Yoklama Gir</button></td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function openAttendanceModal(courseId) {
+            if (!currentUser) {
+                showNotification('Önce giriş yapın.', 'error');
+                return;
+            }
+            if (!canAccessCourse(courseId)) {
+                showNotification('Bu kurs için yetkiniz yok.', 'error');
+                return;
+            }
+
+            activeAttendanceCourseId = courseId;
+            const course = data.courses.find(c => c.id === courseId);
+            document.getElementById('attendanceModalTitle').textContent = `${course ? course.name : 'Kurs'} - Yoklama`;
+            document.getElementById('attendanceCourseName').value = course ? course.name : '';
+
+            const dateInput = document.getElementById('attendanceDate');
+            if (!dateInput.value) {
+                dateInput.value = formatDateForInput(new Date());
+            }
+            renderAttendanceStudents();
+            openModal('attendanceModal');
+        }
+
+        function renderAttendanceStudents() {
+            if (!activeAttendanceCourseId) return;
+            const tbody = document.getElementById('attendanceTable');
+            const date = document.getElementById('attendanceDate').value || formatDateForInput(new Date());
+            const students = data.students.filter(s => s.courses && s.courses.includes(activeAttendanceCourseId));
+            const records = data.attendanceRecords.filter(r => r.courseId === activeAttendanceCourseId && r.date === date);
+
+            if (students.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3">Bu kursa ait öğrenci bulunamadı.</td></tr>';
+                return;
+            }
+
+            const options = [
+                { value: 'present', label: 'Geldi' },
+                { value: 'absent', label: 'Yok' },
+                { value: 'excused', label: 'Mazeretli' },
+                { value: 'medical', label: 'Raporlu' }
+            ];
+
+            tbody.innerHTML = students.map(s => {
+                const record = records.find(r => r.studentId === s.id);
+                const status = record ? record.status : 'present';
+                return `
+                    <tr>
+                        <td>${s.name}</td>
+                        <td>${s.phone || '-'}</td>
+                        <td>
+                            <select data-student="${s.id}">
+                                ${options.map(o => `<option value="${o.value}" ${status === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
+                            </select>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function saveAttendanceRecords() {
+            if (!activeAttendanceCourseId) return;
+            const date = document.getElementById('attendanceDate').value;
+            if (!date) {
+                showNotification('Lütfen tarih seçin.', 'error');
+                return;
+            }
+
+            const selects = document.querySelectorAll('#attendanceTable select');
+            data.attendanceRecords = data.attendanceRecords.filter(r => !(r.courseId === activeAttendanceCourseId && r.date === date));
+
+            selects.forEach(sel => {
+                data.attendanceRecords.push({
+                    id: generateId(),
+                    courseId: activeAttendanceCourseId,
+                    studentId: sel.dataset.student,
+                    date,
+                    status: sel.value
+                });
+            });
+
+            saveData();
+            showNotification('Yoklama kaydedildi!');
+            closeModal('attendanceModal');
+            renderCourseAttendanceList();
+        }
+
+        function getAttendanceStatusLabel(status) {
+            switch (status) {
+                case 'absent': return 'Yok';
+                case 'excused': return 'Mazeretli';
+                case 'medical': return 'Raporlu';
+                default: return 'Geldi';
+            }
         }
 
         function renderTodayLessons() {
@@ -2319,12 +2874,20 @@ function renderUpcomingHolidays() {
                 if (a.day !== b.day) return parseInt(a.day) - parseInt(b.day);
                 return a.startTime.localeCompare(b.startTime);
             });
-            
-            tbody.innerHTML = schedules.map(s => {
+
+            const visibleSchedules = isTeacher() ? schedules.filter(s => canAccessCourse(s.courseId)) : schedules;
+
+            tbody.innerHTML = visibleSchedules.map(s => {
                 const course = data.courses.find(c => c.id === s.courseId);
                 const teacher = data.teachers.find(t => t.id === s.teacherId);
                 const workshop = data.workshops.find(w => w.id === s.workshopId);
-                
+                const actions = isAdmin()
+                    ? `<div class="btn-group">
+                            <button class="btn btn-sm btn-primary" onclick="editSchedule('${s.id}')">✏️</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteSchedule('${s.id}')">🗑️</button>
+                        </div>`
+                    : '<span style="color:#6b7280;">Sadece görüntüleme</span>';
+
                 return `
                     <tr>
                         <td>${getDayName(parseInt(s.day))}</td>
@@ -2338,10 +2901,7 @@ function renderUpcomingHolidays() {
                             <span class="tag ${s.active ? 'tag-green' : 'tag-red'}">${s.active ? 'Aktif' : 'Pasif'}</span>
                         </td>
                         <td>
-                            <div class="btn-group">
-                                <button class="btn btn-sm btn-primary" onclick="editSchedule('${s.id}')">✏️</button>
-                                <button class="btn btn-sm btn-danger" onclick="deleteSchedule('${s.id}')">🗑️</button>
-                            </div>
+                            ${actions}
                         </td>
                     </tr>
                 `;
@@ -2349,6 +2909,7 @@ function renderUpcomingHolidays() {
         }
 
         function openScheduleModal(id = null) {
+            if (!requireAdmin()) return;
             document.getElementById('scheduleForm').reset();
             document.getElementById('scheduleId').value = '';
             document.getElementById('scheduleModalTitle').textContent = 'Yeni Ders Ekle';
@@ -2418,6 +2979,7 @@ function renderUpcomingHolidays() {
         }
 
         function saveSchedule() {
+            if (!requireAdmin()) return;
             const id = document.getElementById('scheduleId').value;
             const courseId = document.getElementById('scheduleCourse').value;
             const teacherId = document.getElementById('scheduleTeacher').value;
@@ -2513,10 +3075,12 @@ function renderUpcomingHolidays() {
         }
 
         function editSchedule(id) {
+            if (!requireAdmin()) return;
             openScheduleModal(id);
         }
 
         function deleteSchedule(id) {
+            if (!requireAdmin()) return;
             if (confirm('Bu dersi silmek istediğinizden emin misiniz?')) {
                 data.schedules = data.schedules.filter(s => s.id !== id);
                 saveData();
@@ -2573,7 +3137,17 @@ function renderUpcomingHolidays() {
             tbody.innerHTML = data.courses.map(c => {
                 const enrolledCount = data.students.filter(s => s.active && s.courses && s.courses.includes(c.id)).length;
                 const progressPercent = c.capacity ? Math.min((enrolledCount / c.capacity) * 100, 100) : 0;
-                
+
+                const actionButtons = isAdmin()
+                    ? `<div class="btn-group">
+                            <button class="btn btn-sm btn-secondary" onclick="showCourseDetail('${c.id}')">👁️</button>
+                            <button class="btn btn-sm btn-primary" onclick="editCourse('${c.id}')">✏️</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteCourse('${c.id}')">🗑️</button>
+                       </div>`
+                    : `<div class="btn-group">
+                            <button class="btn btn-sm btn-secondary" onclick="showCourseDetail('${c.id}')">👁️</button>
+                       </div>`;
+
                 return `
                     <tr>
                         <td><strong>${c.name}</strong></td>
@@ -2590,11 +3164,7 @@ function renderUpcomingHolidays() {
                             <span class="tag ${c.active ? 'tag-green' : 'tag-red'}">${c.active ? 'Aktif' : 'Pasif'}</span>
                         </td>
                         <td>
-                            <div class="btn-group">
-                                <button class="btn btn-sm btn-secondary" onclick="showCourseDetail('${c.id}')">👁️</button>
-                                <button class="btn btn-sm btn-primary" onclick="editCourse('${c.id}')">✏️</button>
-                                <button class="btn btn-sm btn-danger" onclick="deleteCourse('${c.id}')">🗑️</button>
-                            </div>
+                            ${actionButtons}
                         </td>
                     </tr>
                 `;
@@ -2602,6 +3172,7 @@ function renderUpcomingHolidays() {
         }
 
         function openCourseModal(id = null) {
+            if (!requireAdmin()) return;
             document.getElementById('courseForm').reset();
             document.getElementById('courseId').value = '';
             document.getElementById('courseModalTitle').textContent = 'Yeni Kurs Ekle';
@@ -2636,6 +3207,7 @@ function renderUpcomingHolidays() {
         }
 
         function saveCourse() {
+            if (!requireAdmin()) return;
             const id = document.getElementById('courseId').value;
             const name = document.getElementById('courseName').value.trim();
             const category = document.getElementById('courseCategorySelect').value;
@@ -2687,10 +3259,12 @@ function renderUpcomingHolidays() {
         }
 
         function editCourse(id) {
+            if (!requireAdmin()) return;
             openCourseModal(id);
         }
 
         function deleteCourse(id) {
+            if (!requireAdmin()) return;
             const course = data.courses.find(c => c.id === id);
             if (!course) return;
 
@@ -2809,28 +3383,35 @@ function renderUpcomingHolidays() {
         function renderWorkshopsTable() {
             const tbody = document.getElementById('workshopsTable');
             
-            tbody.innerHTML = data.workshops.map(w => `
-                <tr>
-                    <td><span class="workshop-color" style="background: ${w.color};"></span></td>
-                    <td><strong>${w.name}</strong></td>
-                    <td>${w.location || '-'}</td>
-                    <td>${w.capacity}</td>
-                    <td>${w.equipment || '-'}</td>
-                    <td>
-                        <span class="tag ${w.active ? 'tag-green' : 'tag-red'}">${w.active ? 'Aktif' : 'Pasif'}</span>
-                    </td>
-                    <td>
-                        <div class="btn-group">
+            tbody.innerHTML = data.workshops.map(w => {
+                const actions = isAdmin()
+                    ? `<div class="btn-group">
                             <button class="btn btn-sm btn-secondary" onclick="showWorkshopSchedule('${w.id}')">📅</button>
                             <button class="btn btn-sm btn-primary" onclick="editWorkshop('${w.id}')">✏️</button>
                             <button class="btn btn-sm btn-danger" onclick="deleteWorkshop('${w.id}')">🗑️</button>
-                        </div>
-                    </td>
-                </tr>
-            `).join('');
+                        </div>`
+                    : `<div class="btn-group">
+                            <button class="btn btn-sm btn-secondary" onclick="showWorkshopSchedule('${w.id}')">📅</button>
+                        </div>`;
+
+                return `
+                    <tr>
+                        <td><span class="workshop-color" style="background: ${w.color};"></span></td>
+                        <td><strong>${w.name}</strong></td>
+                        <td>${w.location || '-'}</td>
+                        <td>${w.capacity}</td>
+                        <td>${w.equipment || '-'}</td>
+                        <td>
+                            <span class="tag ${w.active ? 'tag-green' : 'tag-red'}">${w.active ? 'Aktif' : 'Pasif'}</span>
+                        </td>
+                        <td>${actions}</td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         function openWorkshopModal(id = null) {
+            if (!requireAdmin()) return;
             document.getElementById('workshopForm').reset();
             document.getElementById('workshopId').value = '';
             document.getElementById('workshopModalTitle').textContent = 'Yeni Atölye Ekle';
@@ -2862,6 +3443,7 @@ function renderUpcomingHolidays() {
         }
 
         function saveWorkshop() {
+            if (!requireAdmin()) return;
             const id = document.getElementById('workshopId').value;
             const name = document.getElementById('workshopName').value.trim();
             
@@ -2898,10 +3480,12 @@ function renderUpcomingHolidays() {
         }
 
         function editWorkshop(id) {
+            if (!requireAdmin()) return;
             openWorkshopModal(id);
         }
 
         function deleteWorkshop(id) {
+            if (!requireAdmin()) return;
             const hasSchedules = data.schedules.some(s => s.workshopId === id);
             if (hasSchedules) {
                 showNotification('Bu atölyede dersler var! Önce dersleri silin veya taşıyın.', 'error');
@@ -2981,10 +3565,19 @@ function renderUpcomingHolidays() {
         // ==================== Teacher Management ====================
         function renderTeachersTable() {
             const tbody = document.getElementById('teachersTable');
-            
+
             tbody.innerHTML = data.teachers.map(t => {
                 const lessonCount = data.schedules.filter(s => s.teacherId === t.id && s.active).length;
-                
+                const actions = isAdmin()
+                    ? `<div class="btn-group">
+                            <button class="btn btn-sm btn-secondary" onclick="showTeacherDetail('${t.id}')">👁️</button>
+                            <button class="btn btn-sm btn-primary" onclick="editTeacher('${t.id}')">✏️</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteTeacher('${t.id}')">🗑️</button>
+                        </div>`
+                    : `<div class="btn-group">
+                            <button class="btn btn-sm btn-secondary" onclick="showTeacherDetail('${t.id}')">👁️</button>
+                        </div>`;
+
                 return `
                     <tr>
                         <td><strong>${t.name}</strong></td>
@@ -2996,11 +3589,7 @@ function renderUpcomingHolidays() {
                             <span class="tag ${t.active ? 'tag-green' : 'tag-red'}">${t.active ? 'Aktif' : 'Pasif'}</span>
                         </td>
                         <td>
-                            <div class="btn-group">
-                                <button class="btn btn-sm btn-secondary" onclick="showTeacherDetail('${t.id}')">👁️</button>
-                                <button class="btn btn-sm btn-primary" onclick="editTeacher('${t.id}')">✏️</button>
-                                <button class="btn btn-sm btn-danger" onclick="deleteTeacher('${t.id}')">🗑️</button>
-                            </div>
+                            ${actions}
                         </td>
                     </tr>
                 `;
@@ -3008,6 +3597,7 @@ function renderUpcomingHolidays() {
         }
 
         function openTeacherModal(id = null) {
+            if (!requireAdmin()) return;
             document.getElementById('teacherForm').reset();
             document.getElementById('teacherId').value = '';
             document.getElementById('teacherModalTitle').textContent = 'Yeni Eğitmen Ekle';
@@ -3032,6 +3622,7 @@ function renderUpcomingHolidays() {
         }
 
         function saveTeacher() {
+            if (!requireAdmin()) return;
             const id = document.getElementById('teacherId').value;
             const name = document.getElementById('teacherName').value.trim();
             const branch = document.getElementById('teacherBranch').value.trim();
@@ -3068,10 +3659,12 @@ function renderUpcomingHolidays() {
         }
 
         function editTeacher(id) {
+            if (!requireAdmin()) return;
             openTeacherModal(id);
         }
 
         function deleteTeacher(id) {
+            if (!requireAdmin()) return;
             const hasSchedules = data.schedules.some(s => s.teacherId === id);
             if (hasSchedules) {
                 showNotification('Bu eğitmene ait dersler var! Önce dersleri silin veya başka eğitmene atayın.', 'error');
@@ -3131,25 +3724,168 @@ function renderUpcomingHolidays() {
         function searchTeachers() {
             const query = document.getElementById('teacherSearch').value.toLowerCase();
             const rows = document.querySelectorAll('#teachersTable tr');
-            
+
             rows.forEach(row => {
                 const text = row.textContent.toLowerCase();
                 row.style.display = text.includes(query) ? '' : 'none';
             });
         }
 
+        // ==================== User Management ====================
+        function renderUsersTable() {
+            const tbody = document.getElementById('usersTable');
+            if (!tbody) return;
+
+            if (!isAdmin()) {
+                tbody.innerHTML = '<tr><td colspan="5">Kullanıcı listesi sadece admin tarafından görüntülenir.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.users.map(u => {
+                const teacher = data.teachers.find(t => t.id === u.teacherId);
+                return `
+                    <tr>
+                        <td>${u.username}</td>
+                        <td><span class="tag ${u.role === 'admin' ? 'tag-blue' : 'tag-yellow'}">${u.role === 'admin' ? 'Admin' : 'Öğretmen'}</span></td>
+                        <td>${teacher ? teacher.name : '-'}</td>
+                        <td><span class="tag ${u.active ? 'tag-green' : 'tag-red'}">${u.active ? 'Aktif' : 'Pasif'}</span></td>
+                        <td>
+                            <div class="btn-group">
+                                <button class="btn btn-sm btn-primary" onclick="editUser('${u.id}')">✏️</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteUser('${u.id}')">🗑️</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function populateUserTeacherSelect() {
+            const select = document.getElementById('userTeacher');
+            if (!select) return;
+            select.innerHTML = '<option value="">Eğitmen Seçin</option>' + data.teachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+        }
+
+        function toggleUserTeacherField() {
+            const field = document.getElementById('userTeacherField');
+            if (!field) return;
+            field.style.display = document.getElementById('userRole').value === 'teacher' ? 'block' : 'none';
+        }
+
+        function openUserModal(id = null) {
+            if (!requireAdmin()) return;
+            document.getElementById('userForm').reset();
+            document.getElementById('userId').value = '';
+            document.getElementById('userModalTitle').textContent = 'Yeni Kullanıcı';
+            document.getElementById('userPassword').value = '';
+            populateUserTeacherSelect();
+            toggleUserTeacherField();
+
+            if (id) {
+                const user = data.users.find(u => u.id === id);
+                if (user) {
+                    document.getElementById('userId').value = user.id;
+                    document.getElementById('username').value = user.username;
+                    document.getElementById('userRole').value = user.role;
+                    document.getElementById('userTeacher').value = user.teacherId || '';
+                    document.getElementById('userActive').checked = user.active;
+                    document.getElementById('userModalTitle').textContent = 'Kullanıcı Düzenle';
+                }
+            }
+
+            toggleUserTeacherField();
+            openModal('userModal');
+        }
+
+        function saveUser() {
+            if (!requireAdmin()) return;
+            const id = document.getElementById('userId').value;
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('userPassword').value;
+            const role = document.getElementById('userRole').value;
+            const teacherId = role === 'teacher' ? document.getElementById('userTeacher').value : '';
+            const active = document.getElementById('userActive').checked;
+
+            if (!username) {
+                showNotification('Kullanıcı adı zorunlu!', 'error');
+                return;
+            }
+
+            if (!id && !password) {
+                showNotification('Yeni kullanıcı için şifre belirleyin!', 'error');
+                return;
+            }
+
+            if (role === 'teacher' && !teacherId) {
+                showNotification('Öğretmen kullanıcılar için bağlı eğitmen seçin!', 'error');
+                return;
+            }
+
+            if (data.users.some(u => u.username === username && u.id !== id)) {
+                showNotification('Bu kullanıcı adı kullanımda.', 'error');
+                return;
+            }
+
+            const existing = data.users.find(u => u.id === id);
+            const userData = existing ? { ...existing } : { id: generateId(), createdAt: new Date().toISOString() };
+            userData.username = username;
+            userData.role = role;
+            userData.teacherId = teacherId;
+            userData.active = active;
+            if (password) {
+                userData.password = password;
+            }
+
+            if (existing) {
+                const idx = data.users.findIndex(u => u.id === id);
+                data.users[idx] = userData;
+                showNotification('Kullanıcı güncellendi!');
+            } else {
+                data.users.push(userData);
+                showNotification('Yeni kullanıcı eklendi!');
+            }
+
+            saveData();
+            closeModal('userModal');
+            renderUsersTable();
+        }
+
+        function editUser(id) {
+            openUserModal(id);
+        }
+
+        function deleteUser(id) {
+            if (!requireAdmin()) return;
+            if (confirm('Bu kullanıcı silinsin mi?')) {
+                data.users = data.users.filter(u => u.id !== id);
+                if (currentUser?.id === id) {
+                    logout();
+                } else {
+                    saveData();
+                }
+                renderUsersTable();
+                showNotification('Kullanıcı silindi!', 'warning');
+            }
+        }
+
         // ==================== Student Management ====================
         function renderStudentsTable() {
             const tbody = document.getElementById('studentsTable');
-            
-            tbody.innerHTML = data.students.map(s => {
+
+            let studentList = data.students;
+            if (isTeacher()) {
+                const accessible = getAccessibleCourseIds();
+                studentList = studentList.filter(s => s.courses && s.courses.some(c => accessible.includes(c)));
+            }
+
+            tbody.innerHTML = studentList.map(s => {
                 const enrolledCourses = s.courses ? s.courses.map(cId => {
                     const course = data.courses.find(c => c.id === cId);
                     return course ? course.name : '';
                 }).filter(Boolean) : [];
                 
                 return `
-                    <tr>
+                    <tr data-student-id="${s.id}">
                         <td><strong>${s.name}</strong></td>
                         <td>${s.tc || '-'}</td>
                         <td>${s.phone || '-'}</td>
@@ -3175,13 +3911,18 @@ function renderUpcomingHolidays() {
         }
 
         function openStudentModal(id = null) {
+            if (!currentUser) {
+                showNotification('Öğrenci işlemleri için giriş yapın.', 'error');
+                return;
+            }
             document.getElementById('studentForm').reset();
             document.getElementById('studentId').value = '';
             document.getElementById('studentModalTitle').textContent = 'Yeni Öğrenci Ekle';
-            
+
             // Render course checkboxes
             const checkboxContainer = document.getElementById('studentCoursesCheckboxes');
-            checkboxContainer.innerHTML = data.courses.filter(c => c.active).map(c => `
+            const availableCourses = isAdmin() ? data.courses.filter(c => c.active) : getAccessibleCourses();
+            checkboxContainer.innerHTML = availableCourses.map(c => `
                 <label style="display: inline-flex; align-items: center; margin-right: 1rem; margin-bottom: 0.5rem;">
                     <input type="checkbox" name="studentCourses" value="${c.id}"> ${c.name}
                 </label>
@@ -3189,6 +3930,14 @@ function renderUpcomingHolidays() {
             
             if (id) {
                 const student = data.students.find(s => s.id === id);
+                if (isTeacher()) {
+                    const accessible = getAccessibleCourseIds();
+                    const hasAccess = student?.courses?.some(c => accessible.includes(c));
+                    if (!hasAccess) {
+                        showNotification('Bu öğrenci için yetkiniz yok.', 'error');
+                        return;
+                    }
+                }
                 if (student) {
                     document.getElementById('studentModalTitle').textContent = 'Öğrenci Düzenle';
                     document.getElementById('studentId').value = student.id;
@@ -3216,6 +3965,10 @@ function renderUpcomingHolidays() {
         }
 
         function saveStudent() {
+            if (!currentUser) {
+                showNotification('Öğrenci kaydı için giriş yapın.', 'error');
+                return;
+            }
             const id = document.getElementById('studentId').value;
             const name = document.getElementById('studentName').value.trim();
             const tc = document.getElementById('studentTc').value.trim();
@@ -3228,6 +3981,14 @@ function renderUpcomingHolidays() {
             // Get selected courses
             const selectedCourses = Array.from(document.querySelectorAll('input[name="studentCourses"]:checked'))
                 .map(cb => cb.value);
+
+            if (isTeacher()) {
+                const accessible = getAccessibleCourseIds();
+                if (selectedCourses.some(c => !accessible.includes(c))) {
+                    showNotification('Sadece kendi dersleriniz için kayıt yapabilirsiniz.', 'error');
+                    return;
+                }
+            }
 
             const studentData = {
                 id: id || generateId(),
@@ -3263,6 +4024,19 @@ function renderUpcomingHolidays() {
         }
 
         function deleteStudent(id) {
+            if (!currentUser) {
+                showNotification('Bu işlem için giriş yapın.', 'error');
+                return;
+            }
+            if (isTeacher()) {
+                const accessible = getAccessibleCourseIds();
+                const student = data.students.find(s => s.id === id);
+                const allowed = student?.courses?.some(c => accessible.includes(c));
+                if (!allowed) {
+                    showNotification('Bu öğrenci için yetkiniz yok.', 'error');
+                    return;
+                }
+            }
             if (confirm('Bu öğrenciyi silmek istediğinizden emin misiniz?')) {
                 data.students = data.students.filter(s => s.id !== id);
                 saveData();
@@ -3274,7 +4048,16 @@ function renderUpcomingHolidays() {
         function showStudentDetail(id) {
             const student = data.students.find(s => s.id === id);
             if (!student) return;
-            
+
+            if (isTeacher()) {
+                const accessible = getAccessibleCourseIds();
+                const allowed = student.courses?.some(c => accessible.includes(c));
+                if (!allowed) {
+                    showNotification('Bu öğrenci bilgilerini görüntüleme yetkiniz yok.', 'error');
+                    return;
+                }
+            }
+
             const enrolledCourses = student.courses ? student.courses.map(cId => {
                 return data.courses.find(c => c.id === cId);
             }).filter(Boolean) : [];
@@ -3324,17 +4107,17 @@ function renderUpcomingHolidays() {
         function filterStudents() {
             const courseId = document.getElementById('studentCourse').value;
             const rows = document.querySelectorAll('#studentsTable tr');
-            
             if (!courseId) {
                 rows.forEach(row => row.style.display = '');
                 return;
             }
-            
-            data.students.forEach((student, index) => {
-                const hasSelectedCourse = student.courses && student.courses.includes(courseId);
-                if (rows[index]) {
-                    rows[index].style.display = hasSelectedCourse ? '' : 'none';
-                }
+
+            const studentMap = new Map(data.students.map(s => [s.id, s]));
+            rows.forEach(row => {
+                const studentId = row.dataset.studentId;
+                const student = studentMap.get(studentId);
+                const hasSelectedCourse = student?.courses && student.courses.includes(courseId);
+                row.style.display = hasSelectedCourse ? '' : 'none';
             });
         }
 
@@ -3517,6 +4300,11 @@ function renderUpcomingHolidays() {
                 case 'student':
                     data.courses.forEach(c => {
                         filterSelect.innerHTML += `<option value="${c.id}">${c.name} (Kurs)</option>`;
+                    });
+                    break;
+                case 'attendance':
+                    getAccessibleCourses(true).forEach(c => {
+                        filterSelect.innerHTML += `<option value="${c.id}">${c.name}</option>`;
                     });
                     break;
             }
@@ -3810,29 +4598,92 @@ function renderUpcomingHolidays() {
         }
 
         function generateAttendanceReport() {
-            let html = '<p style="color: #7f8c8d;">Devam durumu takibi için yoklama modülü eklenmelidir. Bu rapor şu an için örnek veri göstermektedir.</p>';
-            html += `
+            const filterId = document.getElementById('reportFilter').value;
+            const startDate = document.getElementById('reportStartDate').value;
+            const endDate = document.getElementById('reportEndDate').value;
+            const start = startDate ? parseLocalDate(startDate) : null;
+            const end = endDate ? parseLocalDate(endDate) : null;
+
+            const accessibleIds = new Set(isAdmin() ? data.courses.map(c => c.id) : getAccessibleCourseIds());
+            let records = data.attendanceRecords.filter(r => accessibleIds.has(r.courseId));
+
+            if (filterId) records = records.filter(r => r.courseId === filterId);
+            if (start) records = records.filter(r => {
+                const d = parseLocalDate(r.date);
+                return d && d >= start;
+            });
+            if (end) records = records.filter(r => {
+                const d = parseLocalDate(r.date);
+                return d && d <= end;
+            });
+
+            if (records.length === 0) {
+                return '<p style="color:#7f8c8d;">Seçilen kriterlere uygun yoklama kaydı bulunamadı.</p>';
+            }
+
+            const summary = {};
+            records.forEach(r => {
+                if (!summary[r.courseId]) {
+                    summary[r.courseId] = { present: 0, absent: 0, excused: 0, medical: 0 };
+                }
+                const key = ['absent', 'excused', 'medical'].includes(r.status) ? r.status : 'present';
+                summary[r.courseId][key] = (summary[r.courseId][key] || 0) + 1;
+            });
+
+            let html = `
+                <h4>Özet</h4>
                 <table>
                     <thead>
                         <tr>
                             <th>Kurs</th>
-                            <th>Toplam Öğrenci</th>
-                            <th>Ortalama Katılım</th>
+                            <th>Geldi</th>
+                            <th>Yok</th>
+                            <th>Mazeretli</th>
+                            <th>Raporlu</th>
                         </tr>
                     </thead>
                     <tbody>
+                        ${Object.keys(summary).map(courseId => {
+                            const course = data.courses.find(c => c.id === courseId);
+                            const s = summary[courseId];
+                            return `<tr>
+                                <td>${course ? course.name : courseId}</td>
+                                <td>${s.present}</td>
+                                <td>${s.absent}</td>
+                                <td>${s.excused}</td>
+                                <td>${s.medical}</td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
             `;
-            
-            data.courses.filter(c => c.active).forEach(c => {
-                const enrolled = data.students.filter(s => s.courses && s.courses.includes(c.id)).length;
-                html += `<tr>
-                    <td>${c.name}</td>
-                    <td>${enrolled}</td>
-                    <td>-%</td>
-                </tr>`;
-            });
-            
-            html += '</tbody></table>';
+
+            html += `
+                <h4 style="margin-top:1rem;">Detaylı Liste</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Tarih</th>
+                            <th>Kurs</th>
+                            <th>Öğrenci</th>
+                            <th>Durum</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${records.sort((a, b) => a.date.localeCompare(b.date)).map(r => {
+                            const course = data.courses.find(c => c.id === r.courseId);
+                            const student = data.students.find(s => s.id === r.studentId);
+                            return `<tr>
+                                <td>${formatDate(r.date)}</td>
+                                <td>${course ? course.name : '-'}</td>
+                                <td>${student ? student.name : '-'}</td>
+                                <td>${getAttendanceStatusLabel(r.status)}</td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+
             return html;
         }
 
@@ -3907,6 +4758,7 @@ function renderUpcomingHolidays() {
         }
 
         function openCategoryModal() {
+            if (!requireAdmin()) return;
             renderCategoryList();
             openModal('categoryModal');
         }
@@ -3922,6 +4774,7 @@ function renderUpcomingHolidays() {
         }
 
         function addCategory() {
+            if (!requireAdmin()) return;
             const input = document.getElementById('newCategoryName');
             const name = input.value.trim();
             
@@ -3944,6 +4797,7 @@ function renderUpcomingHolidays() {
         }
 
         function deleteCategory(index) {
+            if (!requireAdmin()) return;
             const category = data.categories[index];
             const hasCoursesInCategory = data.courses.some(c => c.category === category);
             
@@ -4015,6 +4869,7 @@ function renderUpcomingHolidays() {
 
         // ==================== Data Import/Export ====================
         function exportAllData() {
+            if (!requireAdmin()) return;
             const exportData = {
                 ...data,
                 exportDate: new Date().toISOString(),
@@ -4031,6 +4886,7 @@ function renderUpcomingHolidays() {
         }
 
         function importAllData(event) {
+            if (!requireAdmin()) return;
             const file = event.target.files[0];
             if (!file) return;
             
@@ -4047,6 +4903,8 @@ function renderUpcomingHolidays() {
                             students: importedData.students || [],
                             schedules: importedData.schedules || [],
                             holidays: importedData.holidays || [],
+                            users: importedData.users || data.users,
+                            attendanceRecords: importedData.attendanceRecords || [],
                             categories: importedData.categories || data.categories,
                             settings: importedData.settings || data.settings
                         };
@@ -4065,6 +4923,7 @@ function renderUpcomingHolidays() {
         }
 
         function clearAllData() {
+            if (!requireAdmin()) return;
             if (confirm('TÜM VERİLER SİLİNECEK! Bu işlem geri alınamaz. Devam etmek istiyor musunuz?')) {
                 if (confirm('Emin misiniz? Tüm kurslar, öğrenciler, eğitmenler ve programlar silinecek!')) {
                     data = {
@@ -4074,6 +4933,8 @@ function renderUpcomingHolidays() {
                         students: [],
                         schedules: [],
                         holidays: [],
+                        users: data.users.length ? data.users.slice(0, 1) : [],
+                        attendanceRecords: [],
                         categories: ['Müzik', 'Resim', 'El Sanatları', 'Dans', 'Spor', 'Dil', 'Bilgisayar', 'Diğer'],
                         settings: {
                             orgName: 'Çeşme Belediyesi Kültür Müdürlüğü',
@@ -4085,8 +4946,9 @@ function renderUpcomingHolidays() {
                             primaryColor: '#1a5276'
                         }
                     };
-                    
+
                     initializeDefaultHolidays();
+                    initializeDefaultUsers();
                     saveData();
                     renderAll();
                     loadSettings();
@@ -4125,8 +4987,9 @@ function renderUpcomingHolidays() {
             // Student course filter
             const studentCourse = document.getElementById('studentCourse');
             if (studentCourse) {
+                const studentCourses = isAdmin() ? data.courses.filter(c => c.active) : getAccessibleCourses();
                 studentCourse.innerHTML = '<option value="">Tüm Kurslar</option>' +
-                    data.courses.filter(c => c.active).map(c => 
+                    studentCourses.map(c =>
                         `<option value="${c.id}">${c.name}</option>`
                     ).join('');
             }
