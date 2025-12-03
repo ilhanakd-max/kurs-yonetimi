@@ -1999,17 +1999,38 @@
         }
 
         function initializeDefaultUsers() {
-            if (!data.users.some(u => u.username === 'admin')) {
-                data.users.push({
-                    id: 'user-admin',
-                    username: 'admin',
-                    password: 'admin123',
-                    role: 'admin',
-                    active: true,
-                    createdAt: new Date().toISOString(),
-                    teacherId: ''
-                });
-                saveData();
+            const existingAdmin = data.users.find(u => u.username === 'admin');
+            const anotherActiveAdmin = data.users.some(u => u.role === 'admin' && u.username !== 'admin' && u.active);
+
+            if (!existingAdmin) {
+                if (!anotherActiveAdmin) {
+                    data.users.push({
+                        id: 'user-admin',
+                        username: 'admin',
+                        password: 'admin123',
+                        role: 'admin',
+                        active: true,
+                        createdAt: new Date().toISOString(),
+                        teacherId: ''
+                    });
+                    saveData();
+                }
+                return;
+            }
+
+            // Varsayılan hesap silinmediyse ancak devre dışı bırakıldıysa veya şifresi değiştiyse,
+            // başka aktif admin yoksa erişimi garanti etmek için tekrar etkinleştir.
+            if (!anotherActiveAdmin) {
+                let updated = false;
+                if (!existingAdmin.active) {
+                    existingAdmin.active = true;
+                    updated = true;
+                }
+                if (existingAdmin.password !== 'admin123') {
+                    existingAdmin.password = 'admin123';
+                    updated = true;
+                }
+                if (updated) saveData();
             }
         }
 
