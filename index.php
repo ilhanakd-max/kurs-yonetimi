@@ -116,33 +116,53 @@ if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['action'])){
         case 'save_course':
             if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
             if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $data=[
-                'id'=>$_POST['course_id']?:null,
-                'name'=>trim($_POST['name']??''),
-                'description'=>trim($_POST['description']??''),
-                'teacher_id'=>$_POST['teacher_id']?:null,
-                'classroom_id'=>$_POST['classroom_id']?:null,
-                'day_of_week'=>(int)($_POST['day_of_week']??1),
-                'start_time'=>$_POST['start_time']??'',
-                'end_time'=>$_POST['end_time']??'',
-                'start_date'=>$_POST['start_date']??'',
-                'end_date'=>$_POST['end_date']??'',
-                'color'=>$_POST['color']??'#3788d8'
-            ];
-            if(!$data['name']||!$data['classroom_id']) json_response(['status'=>'error','message'=>'Ad ve sınıf zorunlu.']);
-            if($conf=check_conflict($pdo,$data['classroom_id'],$data['day_of_week'],$data['start_time'],$data['end_time'],$data['id']))
-                json_response(['status'=>'conflict','message'=>'Çakışma tespit edildi: '.$conf['name']]);
-            if($data['id']){
-                $pdo->prepare("UPDATE courses SET name=:name, description=:description, teacher_id=:teacher_id, classroom_id=:classroom_id, day_of_week=:day_of_week, start_time=:start_time, end_time=:end_time, start_date=:start_date, end_date=:end_date, color=:color WHERE id=:id")
-                    ->execute($data);
-                $courseId=(int)$data['id'];
-            } else {
-                $pdo->prepare("INSERT INTO courses (name,description,teacher_id,classroom_id,day_of_week,start_time,end_time,start_date,end_date,color,created_by) VALUES (:name,:description,:teacher_id,:classroom_id,:day_of_week,:start_time,:end_time,:start_date,:end_date,:color,:created_by)")
-                    ->execute($data+['created_by'=>current_user()['id']]);
-                $courseId=(int)$pdo->lastInsertId();
+            try {
+                $data=[
+                    'id'=>$_POST['course_id']?:null,
+                    'name'=>trim($_POST['name']??''),
+                    'description'=>trim($_POST['description']??''),
+                    'teacher_id'=>$_POST['teacher_id']?:null,
+                    'classroom_id'=>(int)($_POST['classroom_id']??0),
+                    'day_of_week'=>(int)($_POST['day_of_week']??1),
+                    'start_time'=>$_POST['start_time']??'',
+                    'end_time'=>$_POST['end_time']??'',
+                    'start_date'=>$_POST['start_date']??'',
+                    'end_date'=>$_POST['end_date']??'',
+                    'color'=>$_POST['color']??'#3788d8'
+                ];
+                if(!$data['name']||!$data['classroom_id']||!$data['start_time']||!$data['end_time']||!$data['start_date']||!$data['end_date'])
+                    json_response(['status'=>'error','message'=>'Kurs adı, sınıf ve tarih-saat alanları zorunludur.']);
+                if(!in_array($data['day_of_week'],[1,2,3,4,5,6,7],true)) json_response(['status'=>'error','message'=>'Geçersiz gün seçimi.']);
+                $startTs=strtotime($data['start_time']); $endTs=strtotime($data['end_time']);
+                if($startTs===false||$endTs===false||$startTs>=$endTs) json_response(['status'=>'error','message'=>'Başlangıç saati bitişten önce olmalıdır.']);
+                $startDate=strtotime($data['start_date']); $endDate=strtotime($data['end_date']);
+                if($startDate===false||$endDate===false||$startDate>$endDate) json_response(['status'=>'error','message'=>'Kurs başlangıç tarihi bitişten sonra olamaz.']);
+
+                $cls=$pdo->prepare("SELECT id FROM classrooms WHERE id=? AND status=1");
+                $cls->execute([$data['classroom_id']]);
+                if(!$cls->fetch()) json_response(['status'=>'error','message'=>'Seçilen sınıf bulunamadı veya pasif.']);
+                if($data['teacher_id']){
+                    $t=$pdo->prepare("SELECT id FROM users WHERE id=? AND status=1 AND role='teacher'");
+                    $t->execute([$data['teacher_id']]);
+                    if(!$t->fetch()) json_response(['status'=>'error','message'=>'Seçilen öğretmen aktif değil.']);
+                }
+
+                if($conf=check_conflict($pdo,$data['classroom_id'],$data['day_of_week'],$data['start_time'],$data['end_time'],$data['id']))
+                    json_response(['status'=>'conflict','message'=>'Çakışma tespit edildi: '.$conf['name']]);
+                if($data['id']){
+                    $pdo->prepare("UPDATE courses SET name=:name, description=:description, teacher_id=:teacher_id, classroom_id=:classroom_id, day_of_week=:day_of_week, start_time=:start_time, end_time=:end_time, start_date=:start_date, end_date=:end_date, color=:color WHERE id=:id")
+                        ->execute($data);
+                    $courseId=(int)$data['id'];
+                } else {
+                    $pdo->prepare("INSERT INTO courses (name,description,teacher_id,classroom_id,day_of_week,start_time,end_time,start_date,end_date,color,created_by) VALUES (:name,:description,:teacher_id,:classroom_id,:day_of_week,:start_time,:end_time,:start_date,:end_date,:color,:created_by)")
+                        ->execute($data+['created_by'=>current_user()['id']]);
+                    $courseId=(int)$pdo->lastInsertId();
+                }
+                generate_sessions($pdo,$courseId);
+                json_response(['status'=>'success','message'=>'Kurs kaydedildi.']);
+            } catch(Exception $e){
+                json_response(['status'=>'error','message'=>'Kurs kaydedilemedi: '.($e->getCode()===23000?'Benzer kayıt mevcut.':$e->getMessage())]);
             }
-            generate_sessions($pdo,$courseId);
-            json_response(['status'=>'success','message'=>'Kurs kaydedildi.']);
         case 'delete_course':
             if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
             if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
@@ -386,7 +406,7 @@ if(isset($_GET['export']) && $_GET['export']==='excel'){
 <div class="container py-5"><div class="row justify-content-center"><div class="col-md-4"><div class="card shadow-sm"><div class="card-body"><div class="text-center mb-3"><i class="fa-solid fa-school fa-2x text-primary"></i><h5 class="mt-2">Kurs Takip Sistemi</h5><p class="text-muted small">Çeşme Belediyesi Kültür Müdürlüğü</p></div><form id="loginForm"><input type="hidden" name="action" value="login"><div class="mb-3"><label class="form-label">Kullanıcı Adı</label><input class="form-control" name="username" required></div><div class="mb-3"><label class="form-label">Şifre</label><input type="password" class="form-control" name="password" required></div><button class="btn btn-primary w-100" type="submit">Giriş Yap</button></form></div></div></div></div></div>
 <?php endif; ?>
 
-<div class="modal fade" id="courseModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Kurs Formu</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="courseForm"><input type="hidden" name="action" value="save_course"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="course_id" id="course_id"><div class="row g-3"><div class="col-md-6"><label class="form-label">Kurs Adı</label><input class="form-control" name="name" id="course_name" required></div><div class="col-md-6"><label class="form-label">Öğretmen</label><select class="form-select" name="teacher_id" id="course_teacher"><option value="">Seçiniz</option><?php foreach($teachers as $t): ?><option value="<?= $t['id'] ?>"><?= e($t['full_name']) ?></option><?php endforeach; ?></select></div><div class="col-12"><label class="form-label">Açıklama</label><textarea class="form-control" name="description" id="course_description"></textarea></div><div class="col-md-4"><label class="form-label">Gün</label><select class="form-select" name="day_of_week" id="course_day"><?php for($i=1;$i<=7;$i++): ?><option value="<?= $i ?>"><?= day_name($i) ?></option><?php endfor; ?></select></div><div class="col-md-4"><label class="form-label">Başlangıç</label><input type="time" class="form-control" name="start_time" id="course_start" required></div><div class="col-md-4"><label class="form-label">Bitiş</label><input type="time" class="form-control" name="end_time" id="course_end" required></div><div class="col-md-6"><label class="form-label">Kurs Başlangıç</label><input type="date" class="form-control" name="start_date" id="course_start_date" required></div><div class="col-md-6"><label class="form-label">Kurs Bitiş</label><input type="date" class="form-control" name="end_date" id="course_end_date" required></div><div class="col-md-6"><label class="form-label">Bina</label><select class="form-select" id="course_building" onchange="filterClassrooms(this.value)"><option value="">Seçiniz</option><?php foreach($buildings as $b): ?><option value="<?= $b['id'] ?>"><?= e($b['name']) ?></option><?php endforeach; ?></select></div><div class="col-md-6"><label class="form-label">Sınıf</label><select class="form-select" name="classroom_id" id="course_classroom" required><option value="">Seçiniz</option><?php foreach($classrooms as $c): ?><option data-building="<?= $c['building_id'] ?>" value="<?= $c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select></div><div class="col-md-4"><label class="form-label">Renk</label><input type="color" class="form-control form-control-color" name="color" id="course_color" value="#3788d8"></div></div></form><div class="alert alert-warning mt-3 d-none" id="conflictAlert"></div></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveCourse()">Kaydet</button></div></div></div></div>
+<div class="modal fade" id="courseModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Kurs Formu</h5><button class="btn-close" type="button" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="courseForm"><input type="hidden" name="action" value="save_course"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="course_id" id="course_id"><div class="row g-3"><div class="col-md-6"><label class="form-label">Kurs Adı</label><input class="form-control" name="name" id="course_name" required></div><div class="col-md-6"><label class="form-label">Öğretmen</label><select class="form-select" name="teacher_id" id="course_teacher"><option value="">Seçiniz</option><?php foreach($teachers as $t): ?><option value="<?= $t['id'] ?>"><?= e($t['full_name']) ?></option><?php endforeach; ?></select></div><div class="col-12"><label class="form-label">Açıklama</label><textarea class="form-control" name="description" id="course_description"></textarea></div><div class="col-md-4"><label class="form-label">Gün</label><select class="form-select" name="day_of_week" id="course_day"><?php for($i=1;$i<=7;$i++): ?><option value="<?= $i ?>"><?= day_name($i) ?></option><?php endfor; ?></select></div><div class="col-md-4"><label class="form-label">Başlangıç</label><input type="time" class="form-control" name="start_time" id="course_start" required></div><div class="col-md-4"><label class="form-label">Bitiş</label><input type="time" class="form-control" name="end_time" id="course_end" required></div><div class="col-md-6"><label class="form-label">Kurs Başlangıç</label><input type="date" class="form-control" name="start_date" id="course_start_date" required></div><div class="col-md-6"><label class="form-label">Kurs Bitiş</label><input type="date" class="form-control" name="end_date" id="course_end_date" required></div><div class="col-md-6"><label class="form-label">Bina</label><select class="form-select" id="course_building" onchange="filterClassrooms(this.value)"><option value="">Seçiniz</option><?php foreach($buildings as $b): ?><option value="<?= $b['id'] ?>"><?= e($b['name']) ?></option><?php endforeach; ?></select></div><div class="col-md-6"><label class="form-label">Sınıf</label><select class="form-select" name="classroom_id" id="course_classroom" required><option value="">Seçiniz</option><?php foreach($classrooms as $c): ?><option data-building="<?= $c['building_id'] ?>" value="<?= $c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select></div><div class="col-md-4"><label class="form-label">Renk</label><input type="color" class="form-control form-control-color" name="color" id="course_color" value="#3788d8"></div></div></form><div class="alert alert-warning mt-3 d-none" id="conflictAlert"></div></div><div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" type="button" onclick="saveCourse()">Kaydet</button></div></div></div></div>
 
 <div class="modal fade" id="studentModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Öğrenci Formu</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="studentForm"><input type="hidden" name="action" value="save_student"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="student_id" id="student_id"><div class="mb-2"><label class="form-label">Ad Soyad</label><input class="form-control" name="full_name" id="student_full_name" required></div><div class="mb-2"><label class="form-label">T.C. No</label><input class="form-control" name="tc_no" id="student_tc" maxlength="11"></div><div class="mb-2"><label class="form-label">Doğum Tarihi</label><input type="date" class="form-control" name="birth_date" id="student_birth"></div><div class="mb-2"><label class="form-label">Telefon</label><input class="form-control" name="phone" id="student_phone"></div><div class="mb-2"><label class="form-label">E-posta</label><input class="form-control" name="email" id="student_email"></div><div class="mb-2"><label class="form-label">Adres</label><textarea class="form-control" name="address" id="student_address"></textarea></div><div class="mb-2"><label class="form-label">Veli Adı</label><input class="form-control" name="guardian_name" id="student_guardian"></div><div class="mb-2"><label class="form-label">Veli Telefonu</label><input class="form-control" name="guardian_phone" id="student_guardian_phone"></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveStudent()">Kaydet</button></div></div></div></div>
 
