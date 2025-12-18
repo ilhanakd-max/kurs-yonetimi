@@ -184,6 +184,36 @@ if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['action'])){
             if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
             foreach($_POST['settings'] as $k=>$v){ $st=$pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (:k,:v) ON DUPLICATE KEY UPDATE setting_value=:v2"); $st->execute([':k'=>$k,':v'=>$v,':v2'=>$v]); }
             json_response(['status'=>'success','message'=>'Ayarlar güncellendi.']);
+        case 'save_building':
+            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
+            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
+            $name=trim($_POST['name']??''); $address=trim($_POST['address']??''); $desc=trim($_POST['description']??'');
+            if(!$name) json_response(['status'=>'error','message'=>'Bina adı zorunlu.']);
+            $pdo->prepare("INSERT INTO buildings (name,address,description,status) VALUES (?,?,?,1)")->execute([$name,$address,$desc]);
+            json_response(['status'=>'success','message'=>'Bina eklendi.']);
+        case 'save_classroom':
+            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
+            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
+            $name=trim($_POST['name']??''); $building=(int)($_POST['building_id']??0); $cap=(int)($_POST['capacity']??0); $desc=trim($_POST['description']??'');
+            if(!$name || !$building) json_response(['status'=>'error','message'=>'Bina ve sınıf adı zorunlu.']);
+            $pdo->prepare("INSERT INTO classrooms (building_id,name,capacity,description,status) VALUES (?,?,?,?,1)")->execute([$building,$name,$cap,$desc]);
+            json_response(['status'=>'success','message'=>'Sınıf eklendi.']);
+        case 'save_teacher':
+            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
+            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
+            $id=$_POST['teacher_id']??null; $username=trim($_POST['username']??''); $full=trim($_POST['full_name']??''); $email=trim($_POST['email']??''); $phone=trim($_POST['phone']??''); $pass=$_POST['password']??'';
+            if(!$username || !$full) json_response(['status'=>'error','message'=>'Kullanıcı adı ve ad soyad zorunlu.']);
+            if($id){
+                $data=['username'=>$username,'full_name'=>$full,'email'=>$email,'phone'=>$phone,'id'=>$id];
+                $sql="UPDATE users SET username=:username, full_name=:full_name, email=:email, phone=:phone WHERE id=:id";
+                if($pass){ $data['password']=password_hash($pass,PASSWORD_DEFAULT); $sql="UPDATE users SET username=:username, full_name=:full_name, email=:email, phone=:phone, password=:password WHERE id=:id"; }
+                $pdo->prepare($sql)->execute($data);
+            } else {
+                if(!$pass) json_response(['status'=>'error','message'=>'Şifre zorunlu.']);
+                $pdo->prepare("INSERT INTO users (username,password,full_name,email,phone,role,status) VALUES (?,?,?,?,?,'teacher',1)")
+                    ->execute([$username,password_hash($pass,PASSWORD_DEFAULT),$full,$email,$phone]);
+            }
+            json_response(['status'=>'success','message'=>'Öğretmen kaydedildi.']);
         default: json_response(['status'=>'error','message'=>'Bilinmeyen işlem']);
     }
 }
@@ -336,9 +366,10 @@ if(isset($_GET['export']) && $_GET['export']==='excel'){
                 <?php endforeach; ?>
                 </div>
             <?php elseif($page==='teachers'): ?>
-                <h5>Öğretmenler</h5><div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad Soyad</th><th>Kullanıcı</th></tr></thead><tbody><?php foreach($pdo->query("SELECT * FROM users WHERE role='teacher'") as $t): ?><tr><td><?= e($t['full_name']) ?></td><td><?= e($t['username']) ?></td></tr><?php endforeach; ?></tbody></table></div>
+                <div class="d-flex justify-content-between align-items-center mb-3"><h5>Öğretmenler</h5><button class="btn btn-primary btn-sm" onclick="openTeacherModal()"><i class="fa fa-plus"></i> Yeni Öğretmen</button></div>
+                <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad Soyad</th><th>Kullanıcı</th><th></th></tr></thead><tbody><?php foreach($pdo->query("SELECT * FROM users WHERE role='teacher'") as $t): ?><tr><td><?= e($t['full_name']) ?></td><td><?= e($t['username']) ?></td><td class="text-end"><button class="btn btn-outline-secondary btn-sm" onclick='openTeacherModal(<?= json_encode($t) ?>)'><i class="fa fa-pen"></i></button></td></tr><?php endforeach; ?></tbody></table></div>
             <?php elseif($page==='locations'): ?>
-                <h5>Binalar ve Sınıflar</h5><div class="row g-3"><div class="col-md-6"><div class="card"><div class="card-header">Binalar</div><div class="card-body"><ul class="list-group"><?php foreach($buildings as $b): ?><li class="list-group-item d-flex justify-content-between"><span><?= e($b['name']) ?></span><span class="badge bg-secondary">ID:<?= (int)$b['id'] ?></span></li><?php endforeach; ?></ul></div></div></div><div class="col-md-6"><div class="card"><div class="card-header">Sınıflar</div><div class="card-body"><ul class="list-group"><?php foreach($classrooms as $c): ?><li class="list-group-item"><?= e($c['name']) ?> <small class="text-muted">(Bina <?= (int)$c['building_id'] ?>)</small></li><?php endforeach; ?></ul></div></div></div></div>
+                <div class="d-flex justify-content-between align-items-center mb-3"><h5>Binalar ve Sınıflar</h5><div class="d-flex gap-2"><button class="btn btn-primary btn-sm" onclick="openBuildingModal()"><i class="fa fa-plus"></i> Yeni Bina</button><button class="btn btn-outline-primary btn-sm" onclick="openClassroomModal()"><i class="fa fa-door-open"></i> Yeni Sınıf</button></div></div><div class="row g-3"><div class="col-md-6"><div class="card h-100"><div class="card-header">Binalar</div><div class="card-body"><ul class="list-group"><?php foreach($buildings as $b): ?><li class="list-group-item d-flex justify-content-between"><span><?= e($b['name']) ?></span><small class="text-muted">ID:<?= (int)$b['id'] ?></small></li><?php endforeach; ?></ul></div></div></div><div class="col-md-6"><div class="card h-100"><div class="card-header">Sınıflar</div><div class="card-body"><ul class="list-group"><?php foreach($classrooms as $c): ?><li class="list-group-item d-flex justify-content-between"><span><?= e($c['name']) ?></span><small class="text-muted">Bina <?= (int)$c['building_id'] ?> · Kapasite <?= (int)$c['capacity'] ?></small></li><?php endforeach; ?></ul></div></div></div></div>
             <?php elseif($page==='holidays'): ?>
                 <h5>Tatiller</h5><div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad</th><th>Tarih</th><th>Tekrar</th></tr></thead><tbody><?php foreach($pdo->query("SELECT * FROM holidays ORDER BY holiday_date") as $h): ?><tr><td><?= e($h['name']) ?></td><td><?= e($h['holiday_date']) ?></td><td><?= $h['recurring_yearly']?'Evet':'Hayır' ?></td></tr><?php endforeach; ?></tbody></table></div>
             <?php elseif($page==='reports'): ?>
@@ -362,6 +393,14 @@ if(isset($_GET['export']) && $_GET['export']==='excel'){
 <div class="modal fade" id="attendanceModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Yoklama</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="attendanceBody">Yükleniyor...</div></div></div></div>
 <div class="modal fade" id="courseDetailModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Kurs Detayı</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="courseDetailBody">Yükleniyor...</div></div></div></div>
 
+<?php if(is_admin()): ?>
+<div class="modal fade" id="buildingModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Bina Ekle</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="buildingForm"><input type="hidden" name="action" value="save_building"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><div class="mb-2"><label class="form-label">Bina Adı</label><input class="form-control" name="name" required></div><div class="mb-2"><label class="form-label">Adres</label><textarea class="form-control" name="address"></textarea></div><div class="mb-2"><label class="form-label">Açıklama</label><textarea class="form-control" name="description"></textarea></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveBuilding()">Kaydet</button></div></div></div></div>
+
+<div class="modal fade" id="classroomModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Sınıf Ekle</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="classroomForm"><input type="hidden" name="action" value="save_classroom"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><div class="mb-2"><label class="form-label">Bina</label><select class="form-select" name="building_id" required><option value="">Seçiniz</option><?php foreach($buildings as $b): ?><option value="<?= $b['id'] ?>"><?= e($b['name']) ?></option><?php endforeach; ?></select></div><div class="mb-2"><label class="form-label">Sınıf Adı</label><input class="form-control" name="name" required></div><div class="mb-2"><label class="form-label">Kapasite</label><input type="number" class="form-control" name="capacity" value="0" min="0"></div><div class="mb-2"><label class="form-label">Açıklama</label><textarea class="form-control" name="description"></textarea></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveClassroom()">Kaydet</button></div></div></div></div>
+
+<div class="modal fade" id="teacherModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Öğretmen Formu</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="teacherForm"><input type="hidden" name="action" value="save_teacher"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="teacher_id" id="teacher_id"><div class="mb-2"><label class="form-label">Kullanıcı Adı</label><input class="form-control" name="username" id="teacher_username" required></div><div class="mb-2"><label class="form-label">Şifre <small class="text-muted">(Düzenlemede boş bırakabilirsiniz)</small></label><input type="password" class="form-control" name="password" id="teacher_password"></div><div class="mb-2"><label class="form-label">Ad Soyad</label><input class="form-control" name="full_name" id="teacher_full_name" required></div><div class="mb-2"><label class="form-label">E-posta</label><input class="form-control" name="email" id="teacher_email"></div><div class="mb-2"><label class="form-label">Telefon</label><input class="form-control" name="phone" id="teacher_phone"></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveTeacher()">Kaydet</button></div></div></div></div>
+<?php endif; ?>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const courseModal=new bootstrap.Modal(document.getElementById('courseModal')); const studentModal=new bootstrap.Modal(document.getElementById('studentModal')); const attendanceModal=new bootstrap.Modal(document.getElementById('attendanceModal')); const courseDetailModal=new bootstrap.Modal(document.getElementById('courseDetailModal'));
@@ -381,6 +420,12 @@ function openCourseDetail(id){ fetch('?detail='+id).then(r=>r.json()).then(d=>{ 
 function submitSettings(){ const form=document.getElementById('settingsForm'); fetch('',{method:'POST',body:new FormData(form)}).then(r=>r.json()).then(res=>{ if(res.status==='success') showToast(res.message); else showToast(res.message,'error'); }); }
 function exportExcel(){ const s=document.getElementById('rStart').value; const e=document.getElementById('rEnd').value; window.location='?export=excel&start='+s+'&end='+e; }
 const lf=document.getElementById('loginForm'); if(lf){ lf.addEventListener('submit',function(ev){ ev.preventDefault(); const fd=new FormData(lf); fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(res=>{ if(res.status==='success') window.location='?page=calendar'; else showToast(res.message,'error'); }); }); }
+function openBuildingModal(){ document.getElementById('buildingForm').reset(); new bootstrap.Modal(document.getElementById('buildingModal')).show(); }
+function saveBuilding(){ const form=new FormData(document.getElementById('buildingForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); location.reload(); } else showToast(res.message,'error'); }); }
+function openClassroomModal(){ document.getElementById('classroomForm').reset(); new bootstrap.Modal(document.getElementById('classroomModal')).show(); }
+function saveClassroom(){ const form=new FormData(document.getElementById('classroomForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); location.reload(); } else showToast(res.message,'error'); }); }
+function openTeacherModal(data=null){ document.getElementById('teacherForm').reset(); document.getElementById('teacher_id').value=''; if(data){ document.getElementById('teacher_id').value=data.id; document.getElementById('teacher_username').value=data.username; document.getElementById('teacher_full_name').value=data.full_name; document.getElementById('teacher_email').value=data.email; document.getElementById('teacher_phone').value=data.phone; } new bootstrap.Modal(document.getElementById('teacherModal')).show(); }
+function saveTeacher(){ const form=new FormData(document.getElementById('teacherForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); location.reload(); } else showToast(res.message,'error'); }); }
 </script>
 </body>
 </html>
