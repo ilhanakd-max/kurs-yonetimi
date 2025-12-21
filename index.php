@@ -1,5 +1,76 @@
 <?php
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', __DIR__ . '/error.log');
+ini_set('session.use_strict_mode', '1');
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_samesite', 'Lax');
+$isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['SERVER_PORT'] ?? '') == 443);
+if ($isSecure) {
+    ini_set('session.cookie_secure', '1');
+}
+$cookieParams = session_get_cookie_params();
+session_set_cookie_params([
+    'lifetime' => $cookieParams['lifetime'],
+    'path' => $cookieParams['path'],
+    'domain' => $cookieParams['domain'],
+    'secure' => $isSecure,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+function clean_string($value, $maxLength = 255) {
+    $value = is_string($value) ? trim($value) : '';
+    if (mb_strlen($value) > $maxLength) {
+        $value = mb_substr($value, 0, $maxLength);
+    }
+    return $value;
+}
+
+function clean_int($value) {
+    return filter_var($value, FILTER_VALIDATE_INT) !== false ? (int)$value : null;
+}
+
+function clean_date($value) {
+    $value = clean_string($value, 10);
+    return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) ? $value : null;
+}
+
+function clean_email($value) {
+    $value = clean_string($value, 255);
+    return filter_var($value, FILTER_VALIDATE_EMAIL) ? $value : '';
+}
+
+function clean_password($value, $maxLength = 255) {
+    $value = is_string($value) ? $value : '';
+    if (mb_strlen($value) > $maxLength) {
+        $value = mb_substr($value, 0, $maxLength);
+    }
+    return $value;
+}
+
+function json_response($payload, $statusCode = 200) {
+    http_response_code($statusCode);
+    echo json_encode($payload);
+    exit;
+}
+
+function require_auth() {
+    if (empty($_SESSION['user'])) {
+        json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 401);
+    }
+    return $_SESSION['user'];
+}
+
+function require_admin($user) {
+    if (($user['role'] ?? '') !== 'admin') {
+        json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 403);
+    }
+}
 // --- VERİTABANI BAĞLANTISI ---
 $db_host = 'sql211.infinityfree.com';
 $db_name = 'if0_40197167_test';
@@ -16,13 +87,27 @@ try {
 // --- API İŞLEMLERİ (AJAX Requests) ---
 if (isset($_GET['action'])) {
     header('Content-Type: application/json');
-    $action = $_GET['action'];
-    $data = json_decode(file_get_contents('php://input'), true);
+    $action = clean_string($_GET['action'], 50);
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    $rawInput = file_get_contents('php://input');
+    $data = json_decode($rawInput, true);
+    if (!is_array($data)) {
+        $data = [];
+    }
+    if ($method === 'POST') {
+        $token = $data['csrf_token'] ?? '';
+        if (!is_string($token) || !hash_equals($_SESSION['csrf_token'], $token)) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+    }
 
     // LOGIN
     if ($action === 'login') {
-        $u = $data['username'];
-        $p = $data['password'];
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $u = clean_string($data['username'] ?? '', 100);
+        $p = clean_password($data['password'] ?? '', 255);
         
         // Admin Kontrolü
         $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
@@ -38,6 +123,8 @@ if (isset($_GET['action'])) {
         }
 
         if ($user && password_verify($p, $user['password'])) {
+            session_regenerate_id(true);
+            $_SESSION['user'] = ['id' => (int)$user['id'], 'username' => $user['username'], 'role' => $user['role'], 'name' => $user['name']];
             unset($user['password']);
             echo json_encode(['status' => 'success', 'user' => $user]);
             exit;
@@ -58,6 +145,8 @@ if (isset($_GET['action'])) {
         }
 
         if ($auth) {
+             session_regenerate_id(true);
+             $_SESSION['user'] = ['id' => (int)$teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
              $tUser = ['id' => $teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
              echo json_encode(['status' => 'success', 'user' => $tUser]);
              exit;
@@ -68,10 +157,24 @@ if (isset($_GET['action'])) {
     }
 
     // ŞİFRE DEĞİŞTİRME
+    if ($action === 'logout') {
+        unset($_SESSION['user']);
+        session_regenerate_id(true);
+        json_response(['status' => 'success']);
+    }
+
+    $user = require_auth();
+
     if ($action === 'change_password') {
-        $id = $data['id'];
-        $role = $data['role'];
-        $newPass = $data['newPass'];
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $id = clean_int($data['id'] ?? null);
+        $role = clean_string($data['role'] ?? '', 20);
+        $newPass = clean_password($data['newPass'] ?? '', 255);
+        if (!$id || !$newPass || $role !== ($user['role'] ?? '') || $id !== (int)($user['id'] ?? 0)) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
         $hash = password_hash($newPass, PASSWORD_DEFAULT);
 
         if ($role === 'admin') {
@@ -85,6 +188,9 @@ if (isset($_GET['action'])) {
 
     // VERİLERİ ÇEK
     if ($action === 'get_all_data') {
+        if ($method !== 'GET') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
         $response = [];
         $stmt = $pdo->query("SELECT id, name, username, role FROM users");
         $response['users'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -136,22 +242,61 @@ if (isset($_GET['action'])) {
 
     // KAYDETME İŞLEMLERİ
     if ($action === 'save_course') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
         $c = $data;
-        $cancelled = json_encode($c['cancelledDates']);
-        $mods = json_encode($c['modifications']);
+        $cancelled = json_encode(is_array($c['cancelledDates'] ?? null) ? $c['cancelledDates'] : []);
+        $mods = json_encode(is_array($c['modifications'] ?? null) ? $c['modifications'] : []);
+        $courseId = $c['id'] ?? null;
+        $courseIdStr = is_string($courseId) ? $courseId : '';
+        $courseIdInt = clean_int($courseId);
         
-        if (isset($c['id']) && $c['id'] > 0 && !str_starts_with($c['id'], 'new')) {
+        if ($courseIdInt && $courseIdInt > 0 && !str_starts_with($courseIdStr, 'new')) {
             $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=? WHERE id=?";
-            $pdo->prepare($sql)->execute([$c['name'], $c['color'], $c['day'], $c['time'], $c['building'], $c['classroom'], $c['teacherId'], $c['startDate'], $c['endDate'], $cancelled, $mods, $c['id']]);
+            $pdo->prepare($sql)->execute([
+                clean_string($c['name'] ?? '', 150),
+                clean_string($c['color'] ?? '', 20),
+                clean_string($c['day'] ?? '', 20),
+                clean_string($c['time'] ?? '', 20),
+                clean_string($c['building'] ?? '', 150),
+                clean_string($c['classroom'] ?? '', 150),
+                clean_int($c['teacherId'] ?? null),
+                clean_date($c['startDate'] ?? null),
+                clean_date($c['endDate'] ?? null),
+                $cancelled,
+                $mods,
+                $courseIdInt
+            ]);
         } else {
             $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications) VALUES (?,?,?,?,?,?,?,?,?,?,?)";
-            $pdo->prepare($sql)->execute([$c['name'], $c['color'], $c['day'], $c['time'], $c['building'], $c['classroom'], $c['teacherId'], $c['startDate'], $c['endDate'], $cancelled, $mods]);
+            $pdo->prepare($sql)->execute([
+                clean_string($c['name'] ?? '', 150),
+                clean_string($c['color'] ?? '', 20),
+                clean_string($c['day'] ?? '', 20),
+                clean_string($c['time'] ?? '', 20),
+                clean_string($c['building'] ?? '', 150),
+                clean_string($c['classroom'] ?? '', 150),
+                clean_int($c['teacherId'] ?? null),
+                clean_date($c['startDate'] ?? null),
+                clean_date($c['endDate'] ?? null),
+                $cancelled,
+                $mods
+            ]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'delete_course') {
-        $id = $data['id'];
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
         $pdo->prepare("DELETE FROM courses WHERE id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM student_courses WHERE course_id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM attendance WHERE course_id=?")->execute([$id]);
@@ -159,30 +304,69 @@ if (isset($_GET['action'])) {
     }
 
     if ($action === 'save_student') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
         $s = $data;
-        $sid = $s['id'];
-        if ($sid && $sid > 0 && !str_starts_with($sid, 'new')) {
+        $sid = $s['id'] ?? null;
+        $sidStr = is_string($sid) ? $sid : '';
+        $sidInt = clean_int($sid);
+        if ($sidInt && $sidInt > 0 && !str_starts_with($sidStr, 'new')) {
             $sql = "UPDATE students SET name=?, surname=?, phone=?, email=?, tc=?, date_of_birth=?, education=?, parent_name=?, parent_phone=? WHERE id=?";
-            $pdo->prepare($sql)->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['date_of_birth'], $s['education'], $s['parent_name'], $s['parent_phone'], $sid]);
+            $pdo->prepare($sql)->execute([
+                clean_string($s['name'] ?? '', 100),
+                clean_string($s['surname'] ?? '', 100),
+                clean_string($s['phone'] ?? '', 30),
+                clean_email($s['email'] ?? ''),
+                clean_string($s['tc'] ?? '', 20),
+                clean_date($s['date_of_birth'] ?? null),
+                clean_string($s['education'] ?? '', 150),
+                clean_string($s['parent_name'] ?? '', 150),
+                clean_string($s['parent_phone'] ?? '', 30),
+                $sidInt
+            ]);
         } else {
             $sql = "INSERT INTO students (name, surname, phone, email, tc, date_of_birth, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['date_of_birth'], $s['education'], $s['parent_name'], $s['parent_phone']]);
+            $stmt->execute([
+                clean_string($s['name'] ?? '', 100),
+                clean_string($s['surname'] ?? '', 100),
+                clean_string($s['phone'] ?? '', 30),
+                clean_email($s['email'] ?? ''),
+                clean_string($s['tc'] ?? '', 20),
+                clean_date($s['date_of_birth'] ?? null),
+                clean_string($s['education'] ?? '', 150),
+                clean_string($s['parent_name'] ?? '', 150),
+                clean_string($s['parent_phone'] ?? '', 30)
+            ]);
             $sid = $pdo->lastInsertId();
         }
 
-        $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$sid]);
-        if (!empty($s['courses'])) {
+        $sidInt = clean_int($sid);
+        if (!$sidInt) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$sidInt]);
+        if (!empty($s['courses']) && is_array($s['courses'])) {
             $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)");
             foreach($s['courses'] as $cid) {
-                $insert->execute([$sid, $cid]);
+                $cidInt = clean_int($cid);
+                if ($cidInt) {
+                    $insert->execute([$sidInt, $cidInt]);
+                }
             }
         }
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'delete_student') {
-        $id = $data['id'];
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
         $pdo->prepare("DELETE FROM students WHERE id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM attendance WHERE student_id=?")->execute([$id]);
@@ -190,74 +374,137 @@ if (isset($_GET['action'])) {
     }
 
     if ($action === 'save_teacher') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
         $t = $data;
-        if (isset($t['id']) && $t['id'] > 0 && !str_starts_with($t['id'], 'new')) {
+        $tid = $t['id'] ?? null;
+        $tidStr = is_string($tid) ? $tid : '';
+        $tidInt = clean_int($tid);
+        if ($tidInt && $tidInt > 0 && !str_starts_with($tidStr, 'new')) {
             if(!empty($t['password'])) {
-                 $hash = password_hash($t['password'], PASSWORD_DEFAULT);
+                 $hash = password_hash(clean_password($t['password'], 255), PASSWORD_DEFAULT);
                  $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=?, password=? WHERE id=?")
-                ->execute([$t['name'], $t['phone'], $t['email'], $t['username'], $hash, $t['id']]);
+                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $hash, $tidInt]);
             } else {
                  $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=? WHERE id=?")
-                ->execute([$t['name'], $t['phone'], $t['email'], $t['username'], $t['id']]);
+                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $tidInt]);
             }
         } else {
-            $hash = password_hash($t['password'], PASSWORD_DEFAULT);
+            $hash = password_hash(clean_password($t['password'] ?? '', 255), PASSWORD_DEFAULT);
             $pdo->prepare("INSERT INTO teachers (name, phone, email, username, password) VALUES (?,?,?,?,?)")
-                ->execute([$t['name'], $t['phone'], $t['email'], $t['username'], $hash]);
+                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $hash]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'delete_teacher') {
-        $pdo->prepare("DELETE FROM teachers WHERE id=?")->execute([$data['id']]);
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $pdo->prepare("DELETE FROM teachers WHERE id=?")->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'save_user') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
         $u = $data;
-        $hash = password_hash($u['password'], PASSWORD_DEFAULT);
+        $hash = password_hash(clean_password($u['password'] ?? '', 255), PASSWORD_DEFAULT);
         $pdo->prepare("INSERT INTO users (name, username, password, role) VALUES (?,?,?,?)")
-            ->execute([$u['name'], $u['username'], $hash, 'admin']);
+            ->execute([clean_string($u['name'] ?? '', 150), clean_string($u['username'] ?? '', 100), $hash, 'admin']);
         echo json_encode(['status'=>'success']); exit;
     }
     
     if ($action === 'delete_user') {
-        $pdo->prepare("DELETE FROM users WHERE id=?")->execute([$data['id']]);
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $pdo->prepare("DELETE FROM users WHERE id=?")->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'save_attendance') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
         $a = $data;
+        $courseId = clean_int($a['courseId'] ?? null);
+        $studentId = clean_int($a['studentId'] ?? null);
+        $date = clean_date($a['date'] ?? null);
+        $status = clean_string($a['status'] ?? '', 20);
+        if (!$courseId || !$studentId || !$date || !in_array($status, ['present', 'absent', 'excused'], true)) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
         $stmt = $pdo->prepare("SELECT id FROM attendance WHERE course_id=? AND student_id=? AND date=?");
-        $stmt->execute([$a['courseId'], $a['studentId'], $a['date']]);
+        $stmt->execute([$courseId, $studentId, $date]);
         $exist = $stmt->fetch();
 
         if ($exist) {
-            $pdo->prepare("UPDATE attendance SET status=? WHERE id=?")->execute([$a['status'], $exist['id']]);
+            $pdo->prepare("UPDATE attendance SET status=? WHERE id=?")->execute([$status, $exist['id']]);
         } else {
             $pdo->prepare("INSERT INTO attendance (course_id, student_id, date, status) VALUES (?,?,?,?)")
-                ->execute([$a['courseId'], $a['studentId'], $a['date'], $a['status']]);
+                ->execute([$courseId, $studentId, $date, $status]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'save_meta') {
-        $k = $data['key'];
-        $v = is_array($data['value']) ? json_encode($data['value']) : $data['value'];
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $k = clean_string($data['key'] ?? '', 50);
+        $value = $data['value'] ?? '';
+        $v = is_array($value) ? json_encode($value) : clean_string((string)$value, 500);
         $pdo->prepare("REPLACE INTO meta_data (item_key, item_value) VALUES (?, ?)")->execute([$k, $v]);
         echo json_encode(['status'=>'success']); exit;
     }
 
     if ($action === 'add_holiday') {
-        $pdo->prepare("INSERT INTO holidays (date, name) VALUES (?, ?)")->execute([$data['date'], $data['name']]);
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $date = clean_date($data['date'] ?? null);
+        $name = clean_string($data['name'] ?? '', 150);
+        if (!$date || !$name) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $pdo->prepare("INSERT INTO holidays (date, name) VALUES (?, ?)")->execute([$date, $name]);
         echo json_encode(['status'=>'success']); exit;
     }
     if ($action === 'delete_holiday') {
-        $pdo->prepare("DELETE FROM holidays WHERE date=?")->execute([$data['date']]);
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $date = clean_date($data['date'] ?? null);
+        if (!$date) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $pdo->prepare("DELETE FROM holidays WHERE date=?")->execute([$date]);
         echo json_encode(['status'=>'success']); exit;
     }
     
     if ($action === 'reset_data') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
         $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
         $pdo->exec("TRUNCATE TABLE attendance");
         $pdo->exec("TRUNCATE TABLE student_courses");
@@ -268,6 +515,8 @@ if (isset($_GET['action'])) {
         $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
         echo json_encode(['status'=>'success']); exit;
     }
+
+    json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
 }
 ?>
 <!DOCTYPE html>
@@ -394,6 +643,7 @@ footer {position: absolute; bottom: 5px; width: 100%; text-align: center; font-s
 <div class="modal" id="modal"><div class="modal-content" id="modalContent"></div></div>
 <footer>Created by İlhan Akdeniz</footer>
 <script>
+const CSRF_TOKEN = <?php echo json_encode($_SESSION['csrf_token']); ?>;
 const DAYS=['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Pazar'];
 const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-03-30',name:'Ramazan Bayramı 1. Gün'},{date:'2025-03-31',name:'Ramazan Bayramı 2. Gün'},
@@ -408,13 +658,32 @@ let currentViewDate=new Date();
 let viewMode = 'week'; 
 let currentBuildingFilter = localStorage.getItem('lastBuilding') || "";
 
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+        .replace(/`/g, '&#x60;');
+}
+
+function escapeAttr(value) {
+    return escapeHtml(value);
+}
+
+function sanitizeColor(value) {
+    const color = String(value ?? '').trim();
+    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color) ? color : '#e3f2fd';
+}
+
 async function apiCall(action, payload = null) {
     try {
         const url = '?action=' + action;
         const options = payload ? {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
+            body: JSON.stringify({...payload, csrf_token: CSRF_TOKEN})
         } : undefined;
         const res = await fetch(url, options);
         if(!res.ok) throw new Error("Sunucu hatası");
@@ -469,6 +738,7 @@ async function apiLogin() {
 }
 
 function logout(){
+    apiCall('logout', {});
     currentUser=null;
     document.getElementById('loginPage').classList.remove('hidden');
     document.getElementById('mainApp').classList.add('hidden');
@@ -477,7 +747,7 @@ function logout(){
 function showApp(firstTime){
     document.getElementById('loginPage').classList.add('hidden');
     document.getElementById('mainApp').classList.remove('hidden');
-    document.getElementById('currentUser').textContent=currentUser.name+' ('+currentUser.role+')';
+    document.getElementById('currentUser').textContent=String(currentUser.name)+' ('+String(currentUser.role)+')';
     renderNav();
     if(firstTime || document.querySelector('.calendar')) showCalendar();
 }
@@ -579,16 +849,16 @@ function showCalendar(){
             <label>Tesis Filtrele</label>
             <select id="calFilterBuilding" onchange="applyCalendarFilter()">
                 <option value="">Tümü</option>
-                ${data.buildings.map(b=>`<option value="${b}" ${currentBuildingFilter===b?'selected':''}>${b}</option>`).join('')}
+                ${data.buildings.map(b=>`<option value="${escapeAttr(b)}" ${currentBuildingFilter===b?'selected':''}>${escapeHtml(b)}</option>`).join('')}
             </select>
         </div>
         <div class="form-group" style="margin:0;">
             <label>Başlangıç</label>
-            <input type="date" id="calStart" value="${customStart||''}">
+            <input type="date" id="calStart" value="${escapeAttr(customStart||'')}">
         </div>
         <div class="form-group" style="margin:0;">
             <label>Bitiş</label>
-            <input type="date" id="calEnd" value="${customEnd||''}">
+            <input type="date" id="calEnd" value="${escapeAttr(customEnd||'')}">
         </div>
         <div class="form-group" style="margin:0;">
              <button class="btn btn-primary" onclick="applyCalendarFilter()">Uygula</button>
@@ -621,15 +891,15 @@ function showCalendar(){
         html+=`<div class="${classes}" data-day="${DAYS[dt.getDay()===0?6:dt.getDay()-1]}" onclick="openDayModal('${ds}')">
         <div class="cal-date"><span>${dt.getDate()} ${viewMode==='week'?dt.toLocaleDateString('tr-TR',{month:'short'}):''}</span>
         ${holidayName ? '<span>🇹🇷</span>' : ''}</div>`;
-        if(holidayName)html+=`<span class="cal-holiday-label">${holidayName}</span>`;
+        if(holidayName)html+=`<span class="cal-holiday-label">${escapeHtml(holidayName)}</span>`;
         courses.forEach(c=>{
             const cancelled=c.cancelledDates&&c.cancelledDates.includes(ds);
             const mod=c.modifications&&c.modifications[ds];
-            const bgColor = c.color || '#e3f2fd';
+            const bgColor = sanitizeColor(c.color);
             const txtColor = getContrastYIQ(bgColor);
             html+=`<div class="course-tag${cancelled?' cancelled':''}" style="background-color:${bgColor};color:${txtColor}" 
-            onclick="event.stopPropagation();openCourseDetail('${c.id}','${ds}')">
-            ${c.name} <small>${mod?mod.time:c.time}</small></div>`;
+            onclick="event.stopPropagation();openCourseDetail('${escapeAttr(c.id)}','${escapeAttr(ds)}')">
+            ${escapeHtml(c.name)} <small>${escapeHtml(mod?mod.time:c.time)}</small></div>`;
         });
         html+=`</div>`;
     });
@@ -672,26 +942,26 @@ function openDayModal(ds){
     const holidayName=getHoliday(ds);
     let html=`<div class="modal-header"><h2>📅 ${new Date(ds).toLocaleDateString('tr-TR',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</h2>
     <span class="modal-close" onclick="closeModal()">×</span></div>`;
-    if(holidayName)html+=`<div class="conflict" style="background:#f8d7da;border-left-color:#dc3545">🎉 Resmi Tatil: ${holidayName}</div>`;
+    if(holidayName)html+=`<div class="conflict" style="background:#f8d7da;border-left-color:#dc3545">🎉 Resmi Tatil: ${escapeHtml(holidayName)}</div>`;
     html+=`<h3 style="margin:15px 0">Bu Günün Kursları</h3>`;
     if(courses.length===0)html+=`<p style="color:#888">Bu gün için kurs bulunmuyor.</p>`;
     courses.forEach(c=>{
         const cancelled=c.cancelledDates&&c.cancelledDates.includes(ds);
         const mod=c.modifications&&c.modifications[ds];
         html+=`<div class="card" style="margin:10px 0;${cancelled?'opacity:0.5':''}">
-        <strong style="color:${c.color||'#333'}">● ${c.name}</strong> ${cancelled?'(İPTAL)':''}<br>
-        <small>⏰ ${mod?mod.time:c.time} | 📍 ${mod?mod.classroom:c.classroom} | 🏢 ${mod?mod.building:c.building}</small><br>
-        <small>👨‍🏫 ${data.teachers.find(t=>t.id==c.teacherId)?.name||'Atanmamış'}</small><br>`;
+        <strong style="color:${sanitizeColor(c.color||'#333')}">● ${escapeHtml(c.name)}</strong> ${cancelled?'(İPTAL)':''}<br>
+        <small>⏰ ${escapeHtml(mod?mod.time:c.time)} | 📍 ${escapeHtml(mod?mod.classroom:c.classroom)} | 🏢 ${escapeHtml(mod?mod.building:c.building)}</small><br>
+        <small>👨‍🏫 ${escapeHtml(data.teachers.find(t=>t.id==c.teacherId)?.name||'Atanmamış')}</small><br>`;
         if(isAdmin){
             if(!cancelled){
-                html+=`<button class="btn btn-warning btn-sm" onclick="modifyCourse(${c.id},'${ds}')">Değiştir</button>
-                <button class="btn btn-danger btn-sm" onclick="cancelCourse(${c.id},'${ds}')">İptal Et</button>`;
+                html+=`<button class="btn btn-warning btn-sm" onclick="modifyCourse(${c.id},'${escapeAttr(ds)}')">Değiştir</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelCourse(${c.id},'${escapeAttr(ds)}')">İptal Et</button>`;
             } else {
-                html+=`<button class="btn btn-success btn-sm" onclick="activateCourse(${c.id},'${ds}')">✅ Tekrar Aktif Et</button>`;
+                html+=`<button class="btn btn-success btn-sm" onclick="activateCourse(${c.id},'${escapeAttr(ds)}')">✅ Tekrar Aktif Et</button>`;
             }
         }
         if(!cancelled){
-        html+=`<button class="btn btn-success btn-sm" onclick="openAttendance(${c.id},'${ds}')">Yoklama</button>`;
+        html+=`<button class="btn btn-success btn-sm" onclick="openAttendance(${c.id},'${escapeAttr(ds)}')">Yoklama</button>`;
         }
         html+=`</div>`;
     });
@@ -705,17 +975,17 @@ function openAttendance(cid,ds){
     if(!course)return;
     const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
     const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
-    let html=`<div class="modal-header"><h2>📋 Yoklama: ${course.name}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${new Date(ds).toLocaleDateString('tr-TR')}</p>
     <div class="attendance-list" style="margin-top:15px">`;
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        html+=`<div class="attendance-item"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${s.name} ${s.surname}</span>
+        html+=`<div class="attendance-item"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
         <div class="attendance-actions">
-        <button class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'present')">✓</button>
-        <button class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'absent')">✗</button>
-        <button class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'excused')">M</button>
+        <button class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
+        <button class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
+        <button class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
         </div></div>`;
     });
     html+=`</div>`;
@@ -726,21 +996,21 @@ function openStudentInfo(sid){
     if(!s) return;
     const courseNames = s.courses ? s.courses.map(cid => {
         const c = data.courses.find(x => x.id == cid);
-        return c ? c.name : '';
+        return c ? escapeHtml(c.name) : '';
     }).filter(Boolean).join(', ') : '';
     const birthDate = s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : null;
     const age = calculateStudentAge(s.date_of_birth);
     const ageLine = age !== null ? `Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
     let html=`<div class="modal-header"><h2>👨‍🎓 Öğrenci Bilgileri</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div id="studentInfoPanel">
-    <div class="form-group"><label>Ad Soyad</label><div>${s.name} ${s.surname}</div></div>
-    <div class="form-group"><label>TC Kimlik</label><div>${s.tc||'-'}</div></div>
-    <div class="form-group"><label>Doğum Tarihi</label><div>${birthDate || '-'}<br>${ageLine}</div></div>
-    <div class="form-group"><label>Eğitim Durumu</label><div>${s.education||'-'}</div></div>
-    <div class="form-group"><label>Kendi Telefonu</label><div>${s.phone||'-'}</div></div>
-    <div class="form-group"><label>E-posta</label><div>${s.email||'-'}</div></div>
-    <div class="form-group"><label>Veli Adı</label><div>${s.parent_name||'-'}</div></div>
-    <div class="form-group"><label>Veli Telefonu</label><div>${s.parent_phone||'-'}</div></div>
+    <div class="form-group"><label>Ad Soyad</label><div>${escapeHtml(s.name)} ${escapeHtml(s.surname)}</div></div>
+    <div class="form-group"><label>TC Kimlik</label><div>${escapeHtml(s.tc||'-')}</div></div>
+    <div class="form-group"><label>Doğum Tarihi</label><div>${escapeHtml(birthDate || '-')}<br>${escapeHtml(ageLine)}</div></div>
+    <div class="form-group"><label>Eğitim Durumu</label><div>${escapeHtml(s.education||'-')}</div></div>
+    <div class="form-group"><label>Kendi Telefonu</label><div>${escapeHtml(s.phone||'-')}</div></div>
+    <div class="form-group"><label>E-posta</label><div>${escapeHtml(s.email||'-')}</div></div>
+    <div class="form-group"><label>Veli Adı</label><div>${escapeHtml(s.parent_name||'-')}</div></div>
+    <div class="form-group"><label>Veli Telefonu</label><div>${escapeHtml(s.parent_phone||'-')}</div></div>
     <div class="form-group"><label>Kurslar</label><div>${courseNames||'-'}</div></div>
     </div>`;
     showModal(html);
@@ -788,14 +1058,14 @@ function modifyCourse(cid,ds){
     const course=data.courses.find(c=>c.id==cid);
     const mod=course.modifications&&course.modifications[ds]||{};
     let html=`<div class="modal-header"><h2>✏️ Ders Değişikliği</h2><span class="modal-close" onclick="closeModal()">×</span></div>
-    <div class="form-group"><label>Yeni Saat</label><input type="text" id="modTime" value="${mod.time||course.time}" placeholder="15:00-17:00"></div>
-    <div class="form-group"><label>Yeni Tesis</label><select id="modBuilding">${data.buildings.map(b=>`<option ${(mod.building||course.building)===b?'selected':''}>${b}</option>`).join('')}</select></div>
-    <div class="form-group"><label>Yeni Sınıf</label><select id="modClass">${data.classes.map(c=>`<option ${(mod.classroom||course.classroom)===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Yeni Saat</label><input type="text" id="modTime" value="${escapeAttr(mod.time||course.time)}" placeholder="15:00-17:00"></div>
+    <div class="form-group"><label>Yeni Tesis</label><select id="modBuilding">${data.buildings.map(b=>`<option ${(mod.building||course.building)===b?'selected':''}>${escapeHtml(b)}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Yeni Sınıf</label><select id="modClass">${data.classes.map(c=>`<option ${(mod.classroom||course.classroom)===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select></div>
     <div class="form-group"><label><input type="checkbox" id="modRange"> Tarih Aralığına Uygula</label></div>
     <div id="modRangeDates" class="hidden">
-    <div class="form-group"><label>Başlangıç</label><input type="date" id="modStart" value="${ds}"></div>
-    <div class="form-group"><label>Bitiş</label><input type="date" id="modEnd" value="${ds}"></div></div>
-    <button class="btn btn-primary" onclick="saveModification(${cid},'${ds}')">Kaydet</button>`;
+    <div class="form-group"><label>Başlangıç</label><input type="date" id="modStart" value="${escapeAttr(ds)}"></div>
+    <div class="form-group"><label>Bitiş</label><input type="date" id="modEnd" value="${escapeAttr(ds)}"></div></div>
+    <button class="btn btn-primary" onclick="saveModification(${cid},'${escapeAttr(ds)}')">Kaydet</button>`;
     showModal(html);
     document.getElementById('modRange').onchange=function(){document.getElementById('modRangeDates').classList.toggle('hidden',!this.checked)};
 }
@@ -823,13 +1093,13 @@ function openNewCourseModal(ds){
     if(ds){const dt=new Date(ds);defaults.day=DAYS[dt.getDay()===0?6:dt.getDay()-1];defaults.start=ds;}
     let html=`<div class="modal-header"><h2>➕ Yeni Kurs</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div class="form-group"><label>Kurs Adı</label><input type="text" id="cName"></div>
-    <div class="form-group"><label>Renk</label><input type="color" id="cColor" value="${defaults.color}"></div>
-    <div class="form-group"><label>Gün</label><select id="cDay">${DAYS.map(d=>`<option ${d===defaults.day?'selected':''}>${d}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Renk</label><input type="color" id="cColor" value="${escapeAttr(defaults.color)}"></div>
+    <div class="form-group"><label>Gün</label><select id="cDay">${DAYS.map(d=>`<option ${d===defaults.day?'selected':''}>${escapeHtml(d)}</option>`).join('')}</select></div>
     <div class="form-group"><label>Saat (Örn: 15:30-22:30)</label><input type="text" id="cTime" placeholder="15:30-22:30"></div>
-    <div class="form-group"><label>Tesis</label><select id="cBuilding">${data.buildings.map(b=>`<option ${b===defaults.building?'selected':''}>${b}</option>`).join('')}</select></div>
-    <div class="form-group"><label>Sınıf/Atölye</label><select id="cClass">${data.classes.map(c=>`<option>${c}</option>`).join('')}</select></div>
-    <div class="form-group"><label>Öğretmen</label><select id="cTeacher"><option value="">Seçiniz</option>${data.teachers.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select></div>
-    <div class="form-group"><label>Başlangıç Tarihi</label><input type="date" id="cStart" value="${defaults.start}"></div>
+    <div class="form-group"><label>Tesis</label><select id="cBuilding">${data.buildings.map(b=>`<option ${b===defaults.building?'selected':''}>${escapeHtml(b)}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Sınıf/Atölye</label><select id="cClass">${data.classes.map(c=>`<option>${escapeHtml(c)}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Öğretmen</label><select id="cTeacher"><option value="">Seçiniz</option>${data.teachers.map(t=>`<option value="${escapeAttr(t.id)}">${escapeHtml(t.name)}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Başlangıç Tarihi</label><input type="date" id="cStart" value="${escapeAttr(defaults.start)}"></div>
     <div class="form-group"><label>Bitiş Tarihi</label><input type="date" id="cEnd"></div>
     <button class="btn btn-primary" onclick="saveCourse()">Kaydet</button>`;
     showModal(html);
@@ -856,7 +1126,7 @@ function showCourses(){
             <label>Tesis Filtrele</label>
             <select id="courseFilterBuilding" onchange="filterCourses()">
                 <option value="">Tümü</option>
-                ${data.buildings.map(b=>`<option>${b}</option>`).join('')}
+                ${data.buildings.map(b=>`<option>${escapeHtml(b)}</option>`).join('')}
             </select>
         </div>
         <div class="form-group" style="margin:0; align-self:flex-end;">
@@ -869,8 +1139,8 @@ function showCourses(){
     <tbody>`;
     data.courses.forEach(c=>{
         const t=data.teachers.find(x=>x.id==c.teacherId);
-        html+=`<tr data-building="${c.building}"><td>${c.name}</td><td><span style="display:inline-block;width:20px;height:20px;background:${c.color||'#e3f2fd'};border:1px solid #ccc;border-radius:3px"></span></td>
-        <td>${c.day}</td><td>${c.time}</td><td>${c.building}</td><td>${c.classroom}</td><td>${t?.name||'-'}</td>
+        html+=`<tr data-building="${escapeAttr(c.building)}"><td>${escapeHtml(c.name)}</td><td><span style="display:inline-block;width:20px;height:20px;background:${sanitizeColor(c.color)};border:1px solid #ccc;border-radius:3px"></span></td>
+        <td>${escapeHtml(c.day)}</td><td>${escapeHtml(c.time)}</td><td>${escapeHtml(c.building)}</td><td>${escapeHtml(c.classroom)}</td><td>${escapeHtml(t?.name||'-')}</td>
         <td><button class="btn btn-warning" onclick="editCourse(${c.id})">✏️</button>
         <button class="btn btn-danger" onclick="deleteCourse(${c.id})">🗑️</button></td></tr>`;
     });
@@ -915,7 +1185,7 @@ function showTeachers(){
     <div class="table-responsive"><button class="btn btn-primary" onclick="openTeacherModal()">+ Yeni Öğretmen</button>
     <table style="margin-top:15px"><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Kullanıcı Adı</th><th>İşlem</th></tr>`;
     data.teachers.forEach(t=>{
-        html+=`<tr><td>${t.name}</td><td>${t.phone||'-'}</td><td>${t.email||'-'}</td><td>${t.username}</td>
+        html+=`<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.phone||'-')}</td><td>${escapeHtml(t.email||'-')}</td><td>${escapeHtml(t.username)}</td>
         <td><button class="btn btn-warning" onclick="editTeacher(${t.id})">✏️</button>
         <button class="btn btn-danger" onclick="deleteTeacher(${t.id})">🗑️</button></td></tr>`;
     });
@@ -924,11 +1194,11 @@ function showTeachers(){
 }
 function openTeacherModal(t){
     let html=`<div class="modal-header"><h2>${t?'✏️ Düzenle':'➕ Yeni Öğretmen'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
-    <div class="form-group"><label>Ad Soyad</label><input type="text" id="tName" value="${t?.name||''}"></div>
-    <div class="form-group"><label>Telefon</label><input type="text" id="tPhone" value="${t?.phone||''}"></div>
-    <div class="form-group"><label>E-posta</label><input type="email" id="tEmail" value="${t?.email||''}"></div>
-    <div class="form-group"><label>Kullanıcı Adı</label><input type="text" id="tUser" value="${t?.username||''}"></div>
-    <div class="form-group"><label>Şifre</label><input type="password" id="tPass" value="${t?.password||''}"></div>
+    <div class="form-group"><label>Ad Soyad</label><input type="text" id="tName" value="${escapeAttr(t?.name||'')}"></div>
+    <div class="form-group"><label>Telefon</label><input type="text" id="tPhone" value="${escapeAttr(t?.phone||'')}"></div>
+    <div class="form-group"><label>E-posta</label><input type="email" id="tEmail" value="${escapeAttr(t?.email||'')}"></div>
+    <div class="form-group"><label>Kullanıcı Adı</label><input type="text" id="tUser" value="${escapeAttr(t?.username||'')}"></div>
+    <div class="form-group"><label>Şifre</label><input type="password" id="tPass" value="${escapeAttr(t?.password||'')}"></div>
     <button class="btn btn-primary" onclick="saveTeacher(${t?.id||0})">${t?'Güncelle':'Kaydet'}</button>`;
     showModal(html);
 }
@@ -967,7 +1237,7 @@ function showStudents(){
     <div class="form-group" style="margin-top:15px"><label>Kurs Filtrele</label>
     <select id="studentFilter" onchange="filterStudents()">
         <option value="">Tümü</option>
-        ${availableCourses.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
+        ${availableCourses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('')}
     </select></div>
     <div class="table-responsive"><table style="margin-top:15px"><tr><th>Ad</th><th>Soyad</th><th>Veli</th><th>Telefon</th><th>Kurslar</th><th>İşlem</th></tr>`;
     
@@ -979,11 +1249,11 @@ function showStudents(){
             if(!hasTeacherCourse) return;
         }
 
-        const courseNames = s.courses ? s.courses.map(cid => {const c = data.courses.find(x => x.id == cid); return c ? c.name : '';}).filter(n=>n).join(', ') : '';
+        const courseNames = s.courses ? s.courses.map(cid => {const c = data.courses.find(x => x.id == cid); return c ? escapeHtml(c.name) : '';}).filter(n=>n).join(', ') : '';
         const courseIds = s.courses ? s.courses.join(',') : '';
-        html+=`<tr data-courses="${courseIds}"><td>${s.name}</td><td>${s.surname}</td>
-        <td>${s.parent_name||'-'} (${s.parent_phone||'-'})</td>
-        <td>${s.phone||'-'}</td>
+        html+=`<tr data-courses="${escapeAttr(courseIds)}"><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.surname)}</td>
+        <td>${escapeHtml(s.parent_name||'-')} (${escapeHtml(s.parent_phone||'-')})</td>
+        <td>${escapeHtml(s.phone||'-')}</td>
         <td>${courseNames||'-'}</td>
         <td><button class="btn btn-warning" onclick="editStudent(${s.id})">✏️</button>
         <button class="btn btn-danger" onclick="deleteStudent(${s.id})">🗑️</button></td></tr>`;
@@ -1000,25 +1270,25 @@ function filterStudents(){
 function openStudentModal(s){
     let html=`<div class="modal-header"><h2>${s?'✏️ Düzenle':'➕ Yeni Öğrenci'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
-        <div class="form-group"><label>Ad</label><input type="text" id="sName" value="${s?.name||''}"></div>
-        <div class="form-group"><label>Soyad</label><input type="text" id="sSurname" value="${s?.surname||''}"></div>
+        <div class="form-group"><label>Ad</label><input type="text" id="sName" value="${escapeAttr(s?.name||'')}"></div>
+        <div class="form-group"><label>Soyad</label><input type="text" id="sSurname" value="${escapeAttr(s?.surname||'')}"></div>
     </div>
     <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
-        <div class="form-group"><label>TC Kimlik</label><input type="text" id="sTc" value="${s?.tc||''}"></div>
-        <div class="form-group"><label>Doğum Tarihi</label><input type="date" id="sDob" value="${s?.date_of_birth||''}"></div>
+        <div class="form-group"><label>TC Kimlik</label><input type="text" id="sTc" value="${escapeAttr(s?.tc||'')}"></div>
+        <div class="form-group"><label>Doğum Tarihi</label><input type="date" id="sDob" value="${escapeAttr(s?.date_of_birth||'')}"></div>
     </div>
-    <div class="form-group"><label>Eğitim Durumu</label><input type="text" id="sEducation" value="${s?.education||''}"></div>
-    <div class="form-group"><label>Kendi Telefonu</label><input type="text" id="sPhone" value="${s?.phone||''}"></div>
-    <div class="form-group"><label>E-posta</label><input type="email" id="sEmail" value="${s?.email||''}"></div>
+    <div class="form-group"><label>Eğitim Durumu</label><input type="text" id="sEducation" value="${escapeAttr(s?.education||'')}"></div>
+    <div class="form-group"><label>Kendi Telefonu</label><input type="text" id="sPhone" value="${escapeAttr(s?.phone||'')}"></div>
+    <div class="form-group"><label>E-posta</label><input type="email" id="sEmail" value="${escapeAttr(s?.email||'')}"></div>
     <hr>
     <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
-        <div class="form-group"><label>Veli Adı</label><input type="text" id="sParentName" value="${s?.parent_name||''}"></div>
-        <div class="form-group"><label>Veli Telefonu</label><input type="text" id="sParentPhone" value="${s?.parent_phone||''}"></div>
+        <div class="form-group"><label>Veli Adı</label><input type="text" id="sParentName" value="${escapeAttr(s?.parent_name||'')}"></div>
+        <div class="form-group"><label>Veli Telefonu</label><input type="text" id="sParentPhone" value="${escapeAttr(s?.parent_phone||'')}"></div>
     </div>
     <div class="form-group"><label>Kurslar</label><div class="checkbox-group">`;
     data.courses.forEach(c => {
         const isChecked = s && s.courses && s.courses.includes(c.id);
-        html += `<div class="checkbox-item"><input type="checkbox" name="courseSelect" value="${c.id}" ${isChecked ? 'checked' : ''}><span>${c.name}</span></div>`;
+        html += `<div class="checkbox-item"><input type="checkbox" name="courseSelect" value="${escapeAttr(c.id)}" ${isChecked ? 'checked' : ''}><span>${escapeHtml(c.name)}</span></div>`;
     });
     html+=`</div></div><button class="btn btn-primary" onclick="saveStudent(${s?.id||0})">${s?'Güncelle':'Kaydet'}</button>`;
     showModal(html);
@@ -1067,7 +1337,7 @@ function showReports(){
     let availableStudents = data.students;
 
     if(isTeacher) {
-        teacherSelect = `<select id="rTeacher" disabled><option value="${currentUser.id}">${currentUser.name}</option></select>`;
+        teacherSelect = `<select id="rTeacher" disabled><option value="${escapeAttr(currentUser.id)}">${escapeHtml(currentUser.name)}</option></select>`;
         availableCourses = data.courses.filter(c => c.teacherId == currentUser.id);
         
         // Sadece bu kurslara kayıtlı öğrencileri bul
@@ -1077,11 +1347,11 @@ function showReports(){
         });
 
     } else {
-        teacherSelect = `<select id="rTeacher"><option value="">Tümü</option>${data.teachers.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select>`;
+        teacherSelect = `<select id="rTeacher"><option value="">Tümü</option>${data.teachers.map(t=>`<option value="${escapeAttr(t.id)}">${escapeHtml(t.name)}</option>`).join('')}</select>`;
     }
 
-    courseOptions += availableCourses.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-    studentOptions += availableStudents.map(s=>`<option value="${s.id}">${s.name} ${s.surname}</option>`).join('');
+    courseOptions += availableCourses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('');
+    studentOptions += availableStudents.map(s=>`<option value="${escapeAttr(s.id)}">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</option>`).join('');
 
     let html=`<div class="card"><h2>📊 Raporlar</h2>
     <div class="stats"><div class="stat-card"><h3>${data.courses.length}</h3><p>Toplam Kurs</p></div>
@@ -1135,7 +1405,7 @@ function generateReport(){
         if(a.status==='present') statusText='<span style="color:green">✓ Geldi</span>';
         else if(a.status==='absent') statusText='<span style="color:red">✗ Gelmedi</span>';
         else if(a.status==='excused') statusText='<span style="color:#17a2b8">M Mazeretli</span>';
-        html+=`<tr><td>${s?.name} ${s?.surname}</td><td>${c?.name||'-'}</td><td>${t?.name||'-'}</td><td>${a.date}</td><td>${statusText}</td></tr>`;
+        html+=`<tr><td>${escapeHtml(s?.name)} ${escapeHtml(s?.surname)}</td><td>${escapeHtml(c?.name||'-')}</td><td>${escapeHtml(t?.name||'-')}</td><td>${escapeHtml(a.date)}</td><td>${statusText}</td></tr>`;
     });
     html+=`</table></div>
     <div class="export-buttons">
@@ -1165,21 +1435,21 @@ function showAdminTab(idx){
     if(idx===0){
         html=`<h3>Yönetici Kullanıcılar</h3><div class="table-responsive"><button class="btn btn-primary" onclick="addUser()">+ Yeni Yönetici</button>
         <table style="margin-top:15px"><tr><th>Ad</th><th>Kullanıcı Adı</th><th>Rol</th><th>İşlem</th></tr>`;
-        data.users.forEach(u=>{html+=`<tr><td>${u.name}</td><td>${u.username}</td><td>${u.role}</td><td>${u.id!==1?`<button class="btn btn-danger" onclick="deleteUser(${u.id})">🗑️</button>`:''}</td></tr>`;});
+        data.users.forEach(u=>{html+=`<tr><td>${escapeHtml(u.name)}</td><td>${escapeHtml(u.username)}</td><td>${escapeHtml(u.role)}</td><td>${u.id!==1?`<button class="btn btn-danger" onclick="deleteUser(${u.id})">🗑️</button>`:''}</td></tr>`;});
         html+=`</table></div>`;
     }else if(idx===1){
         html=`<h3>Tesisler</h3><div class="form-group"><input type="text" id="newBuilding" placeholder="Yeni tesis adı"><button class="btn btn-primary" onclick="addBuilding()">Ekle</button></div>
-        <ul>${data.buildings.map((b,i)=>`<li>${b} <button class="btn btn-danger btn-sm" onclick="removeBuilding(${i})">×</button></li>`).join('')}</ul>
+        <ul>${data.buildings.map((b,i)=>`<li>${escapeHtml(b)} <button class="btn btn-danger btn-sm" onclick="removeBuilding(${i})">×</button></li>`).join('')}</ul>
         <h3 style="margin-top:20px">Sınıflar/Atölyeler</h3><div class="form-group"><input type="text" id="newClass" placeholder="Yeni sınıf adı"><button class="btn btn-primary" onclick="addClass()">Ekle</button></div>
-        <ul>${data.classes.map((c,i)=>`<li>${c} <button class="btn btn-danger btn-sm" onclick="removeClass(${i})">×</button></li>`).join('')}</ul>`;
+        <ul>${data.classes.map((c,i)=>`<li>${escapeHtml(c)} <button class="btn btn-danger btn-sm" onclick="removeClass(${i})">×</button></li>`).join('')}</ul>`;
     }else if(idx===2){
         html=`<h3>Resmi Tatil Yönetimi</h3><div class="form-group"><input type="date" id="newHolDate"><input type="text" id="newHolName" placeholder="Tatil adı"><button class="btn btn-primary" onclick="addHoliday()">Ekle</button></div>
         <div class="table-responsive"><table><tr><th>Tarih</th><th>Ad</th><th>İşlem</th></tr>`;
         const sortedHolidays = [...data.holidays].sort((a,b)=>a.date.localeCompare(b.date));
-        sortedHolidays.forEach((h)=>{html+=`<tr><td>${h.date}</td><td>${h.name}</td><td><button class="btn btn-danger btn-sm" onclick="removeHoliday('${h.date}')">×</button></td></tr>`;});
+        sortedHolidays.forEach((h)=>{html+=`<tr><td>${escapeHtml(h.date)}</td><td>${escapeHtml(h.name)}</td><td><button class="btn btn-danger btn-sm" onclick="removeHoliday('${escapeAttr(h.date)}')">×</button></td></tr>`;});
         html+=`</table></div>`;
     }else{
-        html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${data.settings.title}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
+        html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
         <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-danger" onclick="resetData()">🗑️ Tüm Verileri Sil (DİKKAT!)</button>`;
     }
     document.getElementById('adminContent').innerHTML=html;
