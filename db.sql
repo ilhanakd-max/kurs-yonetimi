@@ -170,7 +170,7 @@ CREATE TABLE `students` (
   `email` varchar(100) DEFAULT NULL,
   `tc` varchar(11) DEFAULT NULL,
   `reg_date` date DEFAULT NULL,
-  `age` int(11) DEFAULT NULL,
+  `date_of_birth` date DEFAULT NULL,
   `education` varchar(100) DEFAULT NULL,
   `parent_name` varchar(100) DEFAULT NULL,
   `parent_phone` varchar(20) DEFAULT NULL
@@ -180,8 +180,8 @@ CREATE TABLE `students` (
 -- Tablo döküm verisi `students`
 --
 
-INSERT INTO `students` (`id`, `name`, `surname`, `phone`, `email`, `tc`, `reg_date`, `age`, `education`, `parent_name`, `parent_phone`) VALUES
-(1, 'İlhan', 'Akdeniz', '5512208104', 'ilhanakd@gmail.com', '23423435345', '2025-12-19', 0, '', 'İlyas Akdeniz', '5325127831');
+INSERT INTO `students` (`id`, `name`, `surname`, `phone`, `email`, `tc`, `reg_date`, `date_of_birth`, `education`, `parent_name`, `parent_phone`) VALUES
+(1, 'İlhan', 'Akdeniz', '5512208104', 'ilhanakd@gmail.com', '23423435345', '2025-12-19', NULL, '', 'İlyas Akdeniz', '5325127831');
 
 -- --------------------------------------------------------
 
