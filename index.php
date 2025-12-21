@@ -903,6 +903,7 @@ function showCalendar(){
 
     <div class="week-nav">
         <div><button class="btn btn-primary" onclick="changeDate(-1)">◀ Önceki</button>
+        <button class="btn btn-primary" onclick="goToToday()">Bugün</button>
         <button class="btn btn-primary" onclick="changeDate(1)">Sonraki ▶</button></div>
         <h2 style="margin:0;border:none">${title}</h2>
         <div class="view-toggle">
@@ -961,6 +962,7 @@ function applyCalendarFilter(){
 
 function toggleView(mode){viewMode=mode;showCalendar()}
 function changeDate(dir){if(viewMode==='week') currentViewDate.setDate(currentViewDate.getDate()+dir*7);else currentViewDate.setMonth(currentViewDate.getMonth()+dir);showCalendar()}
+function goToToday(){currentViewDate=new Date();showCalendar()}
 
 function getCoursesForDate(ds){
     const dt=new Date(ds),dayName=DAYS[dt.getDay()===0?6:dt.getDay()-1];
