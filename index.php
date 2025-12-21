@@ -730,6 +730,7 @@ function openStudentInfo(sid){
     }).filter(Boolean).join(', ') : '';
     const birthDate = s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : null;
     const age = calculateStudentAge(s.date_of_birth);
+    const ageLine = age !== null ? `Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
     const ageInfo = age !== null ? `Doğum Tarihi: ${birthDate}<br>Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
     let html=`<div class="modal-header"><h2>👨‍🎓 Öğrenci Bilgileri</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div id="studentInfoPanel">
@@ -740,7 +741,7 @@ function openStudentInfo(sid){
     <div class="tab-content active" data-student-tab-content>
     <div class="form-group"><label>Ad Soyad</label><div>${s.name} ${s.surname}</div></div>
     <div class="form-group"><label>TC Kimlik</label><div>${s.tc||'-'}</div></div>
-    <div class="form-group"><label>Doğum Tarihi</label><div>${birthDate || '-'}</div></div>
+    <div class="form-group"><label>Doğum Tarihi</label><div>${birthDate || '-'}<br>${ageLine}</div></div>
     <div class="form-group"><label>Eğitim Durumu</label><div>${s.education||'-'}</div></div>
     <div class="form-group"><label>Kendi Telefonu</label><div>${s.phone||'-'}</div></div>
     <div class="form-group"><label>E-posta</label><div>${s.email||'-'}</div></div>
