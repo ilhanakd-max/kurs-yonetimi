@@ -711,7 +711,7 @@ function openAttendance(cid,ds){
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        html+=`<div class="attendance-item"><span>${s.name} ${s.surname}</span>
+        html+=`<div class="attendance-item"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${s.name} ${s.surname}</span>
         <div class="attendance-actions">
         <button class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'present')">✓</button>
         <button class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'absent')">✗</button>
@@ -719,6 +719,25 @@ function openAttendance(cid,ds){
         </div></div>`;
     });
     html+=`</div>`;
+    showModal(html);
+}
+function openStudentInfo(sid){
+    const s = data.students.find(st => st.id === sid);
+    if(!s) return;
+    const courseNames = s.courses ? s.courses.map(cid => {
+        const c = data.courses.find(x => x.id == cid);
+        return c ? c.name : '';
+    }).filter(Boolean).join(', ') : '';
+    let html=`<div class="modal-header"><h2>👨‍🎓 Öğrenci Bilgileri</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Ad Soyad</label><div>${s.name} ${s.surname}</div></div>
+    <div class="form-group"><label>TC Kimlik</label><div>${s.tc||'-'}</div></div>
+    <div class="form-group"><label>Doğum Tarihi</label><div>${s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : '-'}</div></div>
+    <div class="form-group"><label>Eğitim Durumu</label><div>${s.education||'-'}</div></div>
+    <div class="form-group"><label>Kendi Telefonu</label><div>${s.phone||'-'}</div></div>
+    <div class="form-group"><label>E-posta</label><div>${s.email||'-'}</div></div>
+    <div class="form-group"><label>Veli Adı</label><div>${s.parent_name||'-'}</div></div>
+    <div class="form-group"><label>Veli Telefonu</label><div>${s.parent_phone||'-'}</div></div>
+    <div class="form-group"><label>Kurslar</label><div>${courseNames||'-'}</div></div>`;
     showModal(html);
 }
 async function markAttendance(cid,ds,sid,status){
