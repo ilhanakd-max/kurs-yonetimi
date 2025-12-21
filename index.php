@@ -282,6 +282,14 @@ if (isset($_GET['action'])) {
         $stmt = $pdo->query("SELECT date, name FROM holidays");
         $response['holidays'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        $stmt = $pdo->query("SELECT id, title, message, start_date, end_date FROM announcements WHERE is_active = 1 AND (start_date IS NULL OR start_date <= CURDATE()) AND (end_date IS NULL OR end_date >= CURDATE()) ORDER BY COALESCE(start_date, '1970-01-01') DESC, id DESC");
+        $response['announcements'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (($user['role'] ?? '') === 'admin') {
+            $stmt = $pdo->query("SELECT id, title, message, start_date, end_date, is_active FROM announcements ORDER BY id DESC");
+            $response['announcementsAll'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
         $stmt = $pdo->query("SELECT * FROM meta_data");
         $meta = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
         $response['settings'] = ['title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü'];
@@ -526,6 +534,47 @@ if (isset($_GET['action'])) {
         echo json_encode(['status'=>'success']); exit;
     }
 
+    if ($action === 'save_announcement') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        $title = clean_string($data['title'] ?? '', 150);
+        $message = clean_string($data['message'] ?? '', 2000);
+        $startDate = clean_date($data['start_date'] ?? null);
+        $endDate = clean_date($data['end_date'] ?? null);
+        $isActive = !empty($data['is_active']) ? 1 : 0;
+        if (!$title || !$message) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        if ($startDate && $endDate && $startDate > $endDate) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz tarih aralığı'], 400);
+        }
+
+        if ($id) {
+            $pdo->prepare("UPDATE announcements SET title=?, message=?, start_date=?, end_date=?, is_active=? WHERE id=?")
+                ->execute([$title, $message, $startDate, $endDate, $isActive, $id]);
+        } else {
+            $pdo->prepare("INSERT INTO announcements (title, message, start_date, end_date, is_active) VALUES (?, ?, ?, ?, ?)")
+                ->execute([$title, $message, $startDate, $endDate, $isActive]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'delete_announcement') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $pdo->prepare("DELETE FROM announcements WHERE id=?")->execute([$id]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
     if ($action === 'add_holiday') {
         if ($method !== 'POST') {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
@@ -688,7 +737,7 @@ const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
 ];
 
-let data={users:[],teachers:[],courses:[],students:[],attendance:[],holidays:[],buildings:[],classes:[],settings:{}};
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[]};
 let currentUser=null;
 let currentViewDate=new Date();
 let viewMode = 'week'; 
@@ -713,6 +762,24 @@ function sanitizeColor(value) {
     return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color) ? color : '#e3f2fd';
 }
 
+function getAnnouncementStorageKey(id) {
+    const userKey = currentUser?.id ? String(currentUser.id) : 'guest';
+    return `announcement_hidden_${userKey}_${id}`;
+}
+
+function isAnnouncementHidden(id) {
+    return localStorage.getItem(getAnnouncementStorageKey(id)) === '1';
+}
+
+function hideAnnouncement(id) {
+    localStorage.setItem(getAnnouncementStorageKey(id), '1');
+    showCalendar();
+}
+
+function formatAnnouncementMessage(message) {
+    return escapeHtml(message).replace(/\n/g, '<br>');
+}
+
 async function apiCall(action, payload = null) {
     try {
         const url = '?action=' + action;
@@ -735,6 +802,8 @@ async function refreshData() {
     if(res) {
         data = res;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
+        if(!data.announcements) data.announcements = [];
+        if(!data.announcementsAll) data.announcementsAll = [];
         if(currentUser) showApp(false); 
     }
 }
@@ -879,7 +948,27 @@ function showCalendar(){
         title = `${new Date(customStart).toLocaleDateString('tr-TR')} - ${new Date(customEnd).toLocaleDateString('tr-TR')}`;
     }
 
+    const visibleAnnouncements = (data.announcements || []).filter(a => !isAnnouncementHidden(a.id));
+    let announcementsHtml = '';
+    if (visibleAnnouncements.length) {
+        announcementsHtml = `<div class="conflict" style="margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <strong>📣 Duyurular</strong>
+        </div>
+        ${visibleAnnouncements.map(a => `
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(0,0,0,0.08);">
+                <div>
+                    <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(a.title)}</div>
+                    <div>${formatAnnouncementMessage(a.message)}</div>
+                </div>
+                <button class="btn btn-secondary" style="padding:4px 8px;font-size:0.75em" onclick="hideAnnouncement(${a.id})">Kapat</button>
+            </div>
+        `).join('')}
+        </div>`;
+    }
+
     let html=`<div class="card">
+    ${announcementsHtml}
     <div class="filter-row" style="margin-bottom:10px; padding:10px; background:#e3f2fd; align-items:flex-end;">
         <div class="form-group" style="margin:0;">
             <label>Tesis Filtrele</label>
@@ -1462,7 +1551,8 @@ function showAdmin(){
     <div class="tabs"><button class="tab active" onclick="showAdminTab(0)">Kullanıcılar</button>
     <button class="tab" onclick="showAdminTab(1)">Tesisler/Sınıflar</button>
     <button class="tab" onclick="showAdminTab(2)">Ek Tatiller</button>
-    <button class="tab" onclick="showAdminTab(3)">Genel</button></div>
+    <button class="tab" onclick="showAdminTab(3)">Duyurular</button>
+    <button class="tab" onclick="showAdminTab(4)">Genel</button></div>
     <div id="adminContent"></div></div>`;
     document.getElementById('mainContent').innerHTML=html;
     showAdminTab(0);
@@ -1486,6 +1576,24 @@ function showAdminTab(idx){
         const sortedHolidays = [...data.holidays].sort((a,b)=>a.date.localeCompare(b.date));
         sortedHolidays.forEach((h)=>{html+=`<tr><td>${escapeHtml(h.date)}</td><td>${escapeHtml(h.name)}</td><td><button class="btn btn-danger btn-sm" onclick="removeHoliday('${escapeAttr(h.date)}')">×</button></td></tr>`;});
         html+=`</table></div>`;
+    }else if(idx===3){
+        const announcements = data.announcementsAll || [];
+        html=`<h3>Duyurular</h3><button class="btn btn-primary" onclick="openAnnouncementModal()">+ Yeni Duyuru</button>
+        <div class="table-responsive" style="margin-top:15px"><table><tr><th>Başlık</th><th>Tarih Aralığı</th><th>Durum</th><th>İşlem</th></tr>`;
+        if(announcements.length === 0) {
+            html+=`<tr><td colspan="4">Duyuru bulunamadı.</td></tr>`;
+        } else {
+            announcements.forEach(a=>{
+                const rangeText = a.start_date || a.end_date ? `${escapeHtml(a.start_date || 'Başlangıç yok')} - ${escapeHtml(a.end_date || 'Süresiz')}` : 'Süresiz';
+                const statusText = a.is_active ? 'Aktif' : 'Pasif';
+                html+=`<tr><td>${escapeHtml(a.title)}</td><td>${rangeText}</td><td>${statusText}</td>
+                <td>
+                    <button class="btn btn-info btn-sm" onclick="openAnnouncementModal(${a.id})">Düzenle</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteAnnouncement(${a.id})">Sil</button>
+                </td></tr>`;
+            });
+        }
+        html+=`</table></div>`;
     }else{
         html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
         <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
@@ -1504,6 +1612,43 @@ async function addClass(){const v=document.getElementById('newClass').value;if(v
 async function removeClass(i){const c=[...data.classes];c.splice(i,1);await apiCall('save_meta',{key:'classes',value:c});await refreshData();showAdminTab(1)}
 async function addHoliday(){await apiCall('add_holiday',{date:document.getElementById('newHolDate').value,name:document.getElementById('newHolName').value});await refreshData();showAdminTab(2)}
 async function removeHoliday(d){if(confirm('Silmek istiyor musunuz?')){await apiCall('delete_holiday',{date:d});await refreshData();showAdminTab(2)}}
+function openAnnouncementModal(id=null){
+    const announcement = (data.announcementsAll || []).find(a => a.id == id) || {title:'', message:'', start_date:'', end_date:'', is_active:1};
+    let html=`<div class="modal-header"><h2>📣 ${id ? 'Duyuru Düzenle' : 'Yeni Duyuru'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Başlık</label><input type="text" id="aTitle" value="${escapeAttr(announcement.title || '')}"></div>
+    <div class="form-group"><label>Mesaj</label><textarea id="aMessage" rows="4">${escapeHtml(announcement.message || '')}</textarea></div>
+    <div class="form-group"><label>Başlangıç Tarihi</label><input type="date" id="aStart" value="${escapeAttr(announcement.start_date || '')}"></div>
+    <div class="form-group"><label>Bitiş Tarihi</label><input type="date" id="aEnd" value="${escapeAttr(announcement.end_date || '')}" placeholder="Süresiz"></div>
+    <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+        <input type="checkbox" id="aActive" ${announcement.is_active ? 'checked' : ''} style="width:auto;margin:0;">
+        <label for="aActive" style="margin:0;font-weight:normal;">Aktif</label>
+    </div>
+    <button class="btn btn-primary" onclick="saveAnnouncement(${id ? announcement.id : 'null'})">Kaydet</button>`;
+    showModal(html);
+}
+async function saveAnnouncement(id=null){
+    const payload = {
+        id,
+        title: document.getElementById('aTitle').value,
+        message: document.getElementById('aMessage').value,
+        start_date: document.getElementById('aStart').value,
+        end_date: document.getElementById('aEnd').value,
+        is_active: document.getElementById('aActive').checked ? 1 : 0
+    };
+    const res = await apiCall('save_announcement', payload);
+    if(res && res.status === 'success') {
+        await refreshData();
+        closeModal();
+        showAdminTab(3);
+    }
+}
+async function deleteAnnouncement(id){
+    if(confirm('Silmek istiyor musunuz?')) {
+        await apiCall('delete_announcement', {id});
+        await refreshData();
+        showAdminTab(3);
+    }
+}
 async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
 function downloadDatabaseBackup(){window.location.href='?action=download_backup&token='+encodeURIComponent(CSRF_TOKEN);}
 
