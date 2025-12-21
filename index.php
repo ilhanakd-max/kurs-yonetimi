@@ -71,6 +71,48 @@ function require_admin($user) {
         json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 403);
     }
 }
+
+function stream_database_backup(PDO $pdo, string $dbName) {
+    $timestamp = date('Ymd_His');
+    $fileName = 'backup_' . $dbName . '_' . $timestamp . '.sql';
+    header('Content-Type: application/sql; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    echo "-- Database Backup\n";
+    echo "-- Generated: " . date('Y-m-d H:i:s') . "\n";
+    echo "SET NAMES utf8mb4;\n";
+    echo "SET FOREIGN_KEY_CHECKS=0;\n\n";
+
+    $tables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($tables as $table) {
+        echo "DROP TABLE IF EXISTS `" . $table . "`;\n";
+        $createResult = $pdo->query("SHOW CREATE TABLE `" . $table . "`")->fetch(PDO::FETCH_ASSOC);
+        $createSql = $createResult['Create Table'] ?? (is_array($createResult) ? array_values($createResult)[1] : '');
+        if ($createSql) {
+            echo $createSql . ";\n\n";
+        }
+
+        $rows = $pdo->query("SELECT * FROM `" . $table . "`");
+        while ($row = $rows->fetch(PDO::FETCH_ASSOC)) {
+            $columns = array_map(fn($column) => "`" . $column . "`", array_keys($row));
+            $values = [];
+            foreach ($row as $value) {
+                if ($value === null) {
+                    $values[] = 'NULL';
+                } else {
+                    $values[] = $pdo->quote($value);
+                }
+            }
+            echo "INSERT INTO `" . $table . "` (" . implode(', ', $columns) . ") VALUES (" . implode(', ', $values) . ");\n";
+        }
+        echo "\n";
+    }
+
+    echo "SET FOREIGN_KEY_CHECKS=1;\n";
+    exit;
+}
 // --- VERİTABANI BAĞLANTISI ---
 $db_host = 'sql211.infinityfree.com';
 $db_name = 'if0_40197167_test';
@@ -86,8 +128,18 @@ try {
 
 // --- API İŞLEMLERİ (AJAX Requests) ---
 if (isset($_GET['action'])) {
-    header('Content-Type: application/json');
     $action = clean_string($_GET['action'], 50);
+    if ($action === 'download_backup') {
+        $token = clean_string($_GET['token'] ?? '', 100);
+        if (!$token || !hash_equals($_SESSION['csrf_token'], $token)) {
+            http_response_code(400);
+            exit;
+        }
+        $user = require_auth();
+        require_admin($user);
+        stream_database_backup($pdo, $db_name);
+    }
+    header('Content-Type: application/json');
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $rawInput = file_get_contents('php://input');
     $data = json_decode($rawInput, true);
@@ -1450,7 +1502,8 @@ function showAdminTab(idx){
         html+=`</table></div>`;
     }else{
         html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
-        <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-danger" onclick="resetData()">🗑️ Tüm Verileri Sil (DİKKAT!)</button>`;
+        <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-danger" onclick="resetData()">🗑️ Tüm Verileri Sil (DİKKAT!)</button>
+        <button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
     }
     document.getElementById('adminContent').innerHTML=html;
 }
@@ -1468,6 +1521,7 @@ async function addHoliday(){await apiCall('add_holiday',{date:document.getElemen
 async function removeHoliday(d){if(confirm('Silmek istiyor musunuz?')){await apiCall('delete_holiday',{date:d});await refreshData();showAdminTab(2)}}
 async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
 async function resetData(){if(confirm('TÜM VERİLER SİLİNECEK! Emin misiniz?')){await apiCall('reset_data');location.reload()}}
+function downloadDatabaseBackup(){window.location.href='?action=download_backup&token='+encodeURIComponent(CSRF_TOKEN);}
 
 // MODAL & EXPORT
 function showModal(html){document.getElementById('modalContent').innerHTML=html;document.getElementById('modal').style.display='block'}
