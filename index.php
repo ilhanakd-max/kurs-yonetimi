@@ -731,14 +731,8 @@ function openStudentInfo(sid){
     const birthDate = s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : null;
     const age = calculateStudentAge(s.date_of_birth);
     const ageLine = age !== null ? `Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
-    const ageInfo = age !== null ? `Doğum Tarihi: ${birthDate}<br>Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
     let html=`<div class="modal-header"><h2>👨‍🎓 Öğrenci Bilgileri</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div id="studentInfoPanel">
-    <div class="tabs" id="studentInfoTabs">
-        <button class="tab active" onclick="showStudentInfoTab(0)">Genel Bilgiler</button>
-        <button class="tab" onclick="showStudentInfoTab(1)">Yaş Bilgisi</button>
-    </div>
-    <div class="tab-content active" data-student-tab-content>
     <div class="form-group"><label>Ad Soyad</label><div>${s.name} ${s.surname}</div></div>
     <div class="form-group"><label>TC Kimlik</label><div>${s.tc||'-'}</div></div>
     <div class="form-group"><label>Doğum Tarihi</label><div>${birthDate || '-'}<br>${ageLine}</div></div>
@@ -748,20 +742,8 @@ function openStudentInfo(sid){
     <div class="form-group"><label>Veli Adı</label><div>${s.parent_name||'-'}</div></div>
     <div class="form-group"><label>Veli Telefonu</label><div>${s.parent_phone||'-'}</div></div>
     <div class="form-group"><label>Kurslar</label><div>${courseNames||'-'}</div></div>
-    </div>
-    <div class="tab-content" data-student-tab-content>
-        <div class="form-group"><label>Yaş Bilgisi</label><div>${ageInfo}</div></div>
-    </div>
     </div>`;
     showModal(html);
-}
-function showStudentInfoTab(idx){
-    const panel = document.getElementById('studentInfoPanel');
-    if(!panel) return;
-    const tabs = panel.querySelectorAll('#studentInfoTabs .tab');
-    const contents = panel.querySelectorAll('[data-student-tab-content]');
-    tabs.forEach((t,i)=>t.classList.toggle('active',i===idx));
-    contents.forEach((c,i)=>c.classList.toggle('active',i===idx));
 }
 function calculateStudentAge(dateString){
     if(!dateString) return null;
