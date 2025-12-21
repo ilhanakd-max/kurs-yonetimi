@@ -1,451 +1,1192 @@
 <?php
-// ============== SECTION 1: CONFIGURATION ==============
 session_start();
-mb_internal_encoding('UTF-8');
-ini_set('display_errors', 0);
-error_reporting(E_ALL);
-date_default_timezone_set('Europe/Istanbul');
-
-// Veritabanı bilgileri
-$db_host = getenv('MYSQL_HOST') ?: 'sql211.infinityfree.com';
-$db_user = getenv('MYSQL_USER') ?: 'if0_40197167';
-$db_pass = getenv('MYSQL_PASSWORD') ?: 'test';
-$db_name = getenv('MYSQL_DATABASE') ?: 'if0_40197167_test';
+// --- VERİTABANI BAĞLANTISI ---
+$db_host = 'sql211.infinityfree.com';
+$db_name = 'if0_40197167_test';
+$db_user = 'if0_40197167';
+$db_pass = 'TEST'; // PANEL ŞİFRENİZ
 
 try {
-    $pdo = new PDO("mysql:host={$db_host};dbname={$db_name};charset=utf8mb4", $db_user, $db_pass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::MYSQL_ATTR_INIT_COMMAND => "SET time_zone = '+03:00'"
-    ]);
-} catch (Exception $e) {
-    die('<h2>Veritabanına bağlanılamadı</h2><p>'.htmlspecialchars($e->getMessage()).'</p>');
+    $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch (PDOException $e) {
+    die("Veritabanı hatası: " . $e->getMessage());
 }
 
-function runMigrations(PDO $pdo): void {
-    $tables = [
-        "CREATE TABLE IF NOT EXISTS users (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            username VARCHAR(50) UNIQUE NOT NULL,\n            password VARCHAR(255) NOT NULL,\n            full_name VARCHAR(100) NOT NULL,\n            email VARCHAR(100),\n            phone VARCHAR(20),\n            role ENUM('admin','teacher') DEFAULT 'teacher',\n            status TINYINT DEFAULT 1,\n            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS buildings (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            name VARCHAR(100) NOT NULL,\n            address TEXT,\n            description TEXT,\n            status TINYINT DEFAULT 1\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS classrooms (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            building_id INT,\n            name VARCHAR(100) NOT NULL,\n            capacity INT DEFAULT 0,\n            description TEXT,\n            status TINYINT DEFAULT 1,\n            FOREIGN KEY (building_id) REFERENCES buildings(id) ON DELETE SET NULL\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS courses (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            name VARCHAR(150) NOT NULL,\n            description TEXT,\n            teacher_id INT,\n            classroom_id INT,\n            day_of_week TINYINT NOT NULL COMMENT '1=Monday,7=Sunday',\n            start_time TIME NOT NULL,\n            end_time TIME NOT NULL,\n            start_date DATE NOT NULL,\n            end_date DATE NOT NULL,\n            color VARCHAR(7) DEFAULT '#3788d8',\n            status TINYINT DEFAULT 1,\n            created_by INT,\n            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n            FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE SET NULL,\n            FOREIGN KEY (classroom_id) REFERENCES classrooms(id) ON DELETE SET NULL\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS course_sessions (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            course_id INT NOT NULL,\n            session_date DATE NOT NULL,\n            start_time TIME NOT NULL,\n            end_time TIME NOT NULL,\n            classroom_id INT,\n            status ENUM('active','cancelled','modified') DEFAULT 'active',\n            cancel_reason TEXT,\n            notes TEXT,\n            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS students (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            full_name VARCHAR(100) NOT NULL,\n            tc_no VARCHAR(11) UNIQUE,\n            birth_date DATE,\n            phone VARCHAR(20),\n            email VARCHAR(100),\n            address TEXT,\n            guardian_name VARCHAR(100),\n            guardian_phone VARCHAR(20),\n            status TINYINT DEFAULT 1,\n            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS course_registrations (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            course_id INT NOT NULL,\n            student_id INT NOT NULL,\n            registration_date DATE DEFAULT (CURRENT_DATE),\n            status ENUM('active','completed','dropped') DEFAULT 'active',\n            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,\n            FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,\n            UNIQUE KEY unique_registration (course_id, student_id)\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS attendance (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            session_id INT NOT NULL,\n            student_id INT NOT NULL,\n            status ENUM('present','absent','excused') NOT NULL,\n            notes TEXT,\n            marked_by INT,\n            marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n            FOREIGN KEY (session_id) REFERENCES course_sessions(id) ON DELETE CASCADE,\n            FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,\n            UNIQUE KEY unique_attendance (session_id, student_id)\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS holidays (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            name VARCHAR(100) NOT NULL,\n            holiday_date DATE NOT NULL,\n            recurring_yearly TINYINT DEFAULT 0,\n            created_by INT\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
-        "CREATE TABLE IF NOT EXISTS settings (\n            id INT AUTO_INCREMENT PRIMARY KEY,\n            setting_key VARCHAR(50) UNIQUE NOT NULL,\n            setting_value TEXT,\n            description VARCHAR(255)\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-    ];
-    foreach ($tables as $sql) { $pdo->exec($sql); }
+// --- API İŞLEMLERİ (AJAX Requests) ---
+if (isset($_GET['action'])) {
+    header('Content-Type: application/json');
+    $action = $_GET['action'];
+    $data = json_decode(file_get_contents('php://input'), true);
 
-    $adminHash = password_hash('admin123', PASSWORD_DEFAULT);
-    $pdo->prepare("INSERT IGNORE INTO users (username, password, full_name, role) VALUES ('admin', :p, 'Sistem Yöneticisi', 'admin')")->execute([':p'=>$adminHash]);
+    // LOGIN
+    if ($action === 'login') {
+        $u = $data['username'];
+        $p = $data['password'];
+        
+        // Admin Kontrolü
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
+        $stmt->execute([$u]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    $holidays = [
-        ['Yılbaşı', '2025-01-01', 1],
-        ['Ulusal Egemenlik ve Çocuk Bayramı', '2025-04-23', 1],
-        ['Emek ve Dayanışma Günü', '2025-05-01', 1],
-        ['Atatürk\'ü Anma, Gençlik ve Spor Bayramı', '2025-05-19', 1],
-        ['Zafer Bayramı', '2025-08-30', 1],
-        ['Cumhuriyet Bayramı', '2025-10-29', 1],
-    ];
-    $stmt = $pdo->prepare("INSERT IGNORE INTO holidays (name, holiday_date, recurring_yearly) VALUES (?,?,?)");
-    foreach ($holidays as $h) { $stmt->execute($h); }
-}
-runMigrations($pdo);
+        // İlk kurulum için varsayılan admin
+        if (!$user && $u === 'admin' && $p === 'admin123') {
+            $hash = password_hash('admin123', PASSWORD_DEFAULT);
+            $pdo->prepare("INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)")
+                ->execute(['Sistem Yöneticisi', 'admin', $hash, 'admin']);
+            $user = ['id' => 1, 'username' => 'admin', 'role' => 'admin', 'name' => 'Sistem Yöneticisi', 'password' => $hash];
+        }
 
-// ============== SECTION 2: HELPER FUNCTIONS ==============
-function e(string $v): string { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); }
-function csrf_token(): string { if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token']=bin2hex(random_bytes(32)); return $_SESSION['csrf_token']; }
-function check_csrf(): bool { return isset($_POST['csrf_token']) && hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token']); }
-function current_user(): ?array { return $_SESSION['user'] ?? null; }
-function is_admin(): bool { return (current_user()['role'] ?? '') === 'admin'; }
-function require_login(): void { if (!current_user()) { header('Location: ?page=login'); exit; } }
-function json_response($data): void { header('Content-Type: application/json'); echo json_encode($data, JSON_UNESCAPED_UNICODE); exit; }
-function day_name(int $d): string { return [1=>'Pazartesi',2=>'Salı',3=>'Çarşamba',4=>'Perşembe',5=>'Cuma',6=>'Cumartesi',7=>'Pazar'][$d] ?? ''; }
-function week_range(string $date): array { $ts=strtotime($date); $start=strtotime('-'.(date('N',$ts)-1).' days',$ts); $end=strtotime('+'.(7-date('N',$ts)).' days',$ts); return [date('Y-m-d',$start), date('Y-m-d',$end)]; }
-function fetch_teachers(PDO $pdo): array { return $pdo->query("SELECT id, full_name FROM users WHERE status=1 AND role='teacher' ORDER BY full_name")->fetchAll(); }
-function fetch_buildings(PDO $pdo): array { return $pdo->query("SELECT * FROM buildings WHERE status=1 ORDER BY name")->fetchAll(); }
-function fetch_classrooms(PDO $pdo): array { return $pdo->query("SELECT * FROM classrooms WHERE status=1 ORDER BY name")->fetchAll(); }
-function fetch_users(PDO $pdo): array { return $pdo->query("SELECT * FROM users ORDER BY id")->fetchAll(); }
-function get_course(int $id, PDO $pdo): ?array {
-    $stmt=$pdo->prepare("SELECT c.*, u.full_name AS teacher_name, cl.name AS classroom_name, b.name AS building_name FROM courses c LEFT JOIN users u ON c.teacher_id=u.id LEFT JOIN classrooms cl ON c.classroom_id=cl.id LEFT JOIN buildings b ON cl.building_id=b.id WHERE c.id=?");
-    $stmt->execute([$id]); return $stmt->fetch() ?: null;
-}
-function get_courses_for_week(PDO $pdo, string $start, string $end): array {
-    $stmt=$pdo->prepare("SELECT cs.*, c.name AS course_name, c.color, c.id AS course_id, u.full_name AS teacher_name, cl.name AS classroom_name, b.name AS building_name FROM course_sessions cs JOIN courses c ON cs.course_id=c.id LEFT JOIN users u ON c.teacher_id=u.id LEFT JOIN classrooms cl ON cs.classroom_id=cl.id LEFT JOIN buildings b ON cl.building_id=b.id WHERE cs.session_date BETWEEN ? AND ? AND c.status=1 ORDER BY cs.session_date, cs.start_time");
-    $stmt->execute([$start,$end]); return $stmt->fetchAll();
-}
-function get_holidays(PDO $pdo, string $start, string $end): array {
-    $stmt=$pdo->prepare("SELECT * FROM holidays WHERE holiday_date BETWEEN ? AND ? OR (recurring_yearly=1 AND DATE_FORMAT(holiday_date,'%m-%d') BETWEEN DATE_FORMAT(?,'%m-%d') AND DATE_FORMAT(?,'%m-%d'))");
-    $stmt->execute([$start,$end,$start,$end]); return $stmt->fetchAll();
-}
-function check_conflict(PDO $pdo, $classroomId, $dayOfWeek, $startTime, $endTime, $courseId=null): ?array {
-    $sql="SELECT c.* FROM courses c WHERE c.classroom_id=? AND c.day_of_week=? AND c.status=1";
-    $params=[$classroomId,$dayOfWeek];
-    if($courseId){ $sql.=" AND c.id!=?"; $params[]=$courseId; }
-    $sql.=" AND ((? BETWEEN c.start_time AND c.end_time) OR (? BETWEEN c.start_time AND c.end_time) OR (c.start_time BETWEEN ? AND ?))";
-    $params=array_merge($params,[$startTime,$endTime,$startTime,$endTime]);
-    $stmt=$pdo->prepare($sql); $stmt->execute($params); return $stmt->fetch() ?: null;
-}
-function generate_sessions(PDO $pdo, int $courseId): void {
-    $course=get_course($courseId,$pdo); if(!$course) return; $pdo->prepare("DELETE FROM course_sessions WHERE course_id=?")->execute([$courseId]);
-    $start=strtotime($course['start_date']); $end=strtotime($course['end_date']); $dow=(int)$course['day_of_week'];
-    for($t=$start;$t<=$end;$t=strtotime('+1 day',$t)){
-        if((int)date('N',$t)!==$dow) continue;
-        $pdo->prepare("INSERT INTO course_sessions (course_id, session_date, start_time, end_time, classroom_id) VALUES (?,?,?,?,?)")
-            ->execute([$courseId,date('Y-m-d',$t),$course['start_time'],$course['end_time'],$course['classroom_id']]);
-    }
-}
-function ensure_active_user(PDO $pdo): void {
-    if(current_user()){
-        $st=$pdo->prepare("SELECT status FROM users WHERE id=?"); $st->execute([current_user()['id']]); if($st->fetchColumn()!=1){ session_destroy(); header('Location: ?page=login'); exit; }
-    }
-}
-ensure_active_user($pdo);
+        if ($user && password_verify($p, $user['password'])) {
+            unset($user['password']);
+            echo json_encode(['status' => 'success', 'user' => $user]);
+            exit;
+        }
 
-// ============== SECTION 3: API ENDPOINTS ==============
-if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['action'])){
-    $action=$_POST['action'];
-    if($action!=='login' && !current_user()) json_response(['status'=>'error','message'=>'Oturum açın.']);
-    switch($action){
-        case 'login':
-            $u=trim($_POST['username']??''); $p=$_POST['password']??'';
-            $st=$pdo->prepare("SELECT * FROM users WHERE username=? AND status=1"); $st->execute([$u]); $user=$st->fetch();
-            if($user && password_verify($p,$user['password'])){ session_regenerate_id(true); $_SESSION['user']=$user; json_response(['status'=>'success']); }
-            json_response(['status'=>'error','message'=>'Geçersiz kullanıcı adı veya şifre.']);
-        case 'save_course':
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            try {
-                $data=[
-                    'id'=>$_POST['course_id']?:null,
-                    'name'=>trim($_POST['name']??''),
-                    'description'=>trim($_POST['description']??''),
-                    'teacher_id'=>$_POST['teacher_id']?:null,
-                    'classroom_id'=>(int)($_POST['classroom_id']??0),
-                    'day_of_week'=>(int)($_POST['day_of_week']??1),
-                    'start_time'=>$_POST['start_time']??'',
-                    'end_time'=>$_POST['end_time']??'',
-                    'start_date'=>$_POST['start_date']??'',
-                    'end_date'=>$_POST['end_date']??'',
-                    'color'=>$_POST['color']??'#3788d8'
-                ];
-                if(!$data['name']||!$data['classroom_id']||!$data['start_time']||!$data['end_time']||!$data['start_date']||!$data['end_date'])
-                    json_response(['status'=>'error','message'=>'Kurs adı, sınıf ve tarih-saat alanları zorunludur.']);
-                if(!in_array($data['day_of_week'],[1,2,3,4,5,6,7],true)) json_response(['status'=>'error','message'=>'Geçersiz gün seçimi.']);
-                $startTs=strtotime($data['start_time']); $endTs=strtotime($data['end_time']);
-                if($startTs===false||$endTs===false||$startTs>=$endTs) json_response(['status'=>'error','message'=>'Başlangıç saati bitişten önce olmalıdır.']);
-                $startDate=strtotime($data['start_date']); $endDate=strtotime($data['end_date']);
-                if($startDate===false||$endDate===false||$startDate>$endDate) json_response(['status'=>'error','message'=>'Kurs başlangıç tarihi bitişten sonra olamaz.']);
-
-                $cls=$pdo->prepare("SELECT id FROM classrooms WHERE id=? AND status=1");
-                $cls->execute([$data['classroom_id']]);
-                if(!$cls->fetch()) json_response(['status'=>'error','message'=>'Seçilen sınıf bulunamadı veya pasif.']);
-                if($data['teacher_id']){
-                    $t=$pdo->prepare("SELECT id FROM users WHERE id=? AND status=1 AND role='teacher'");
-                    $t->execute([$data['teacher_id']]);
-                    if(!$t->fetch()) json_response(['status'=>'error','message'=>'Seçilen öğretmen aktif değil.']);
-                }
-
-                if($conf=check_conflict($pdo,$data['classroom_id'],$data['day_of_week'],$data['start_time'],$data['end_time'],$data['id']))
-                    json_response(['status'=>'conflict','message'=>'Çakışma tespit edildi: '.$conf['name']]);
-                if($data['id']){
-                    $pdo->prepare("UPDATE courses SET name=:name, description=:description, teacher_id=:teacher_id, classroom_id=:classroom_id, day_of_week=:day_of_week, start_time=:start_time, end_time=:end_time, start_date=:start_date, end_date=:end_date, color=:color WHERE id=:id")
-                        ->execute($data);
-                    $courseId=(int)$data['id'];
-                } else {
-                    $pdo->prepare("INSERT INTO courses (name,description,teacher_id,classroom_id,day_of_week,start_time,end_time,start_date,end_date,color,created_by) VALUES (:name,:description,:teacher_id,:classroom_id,:day_of_week,:start_time,:end_time,:start_date,:end_date,:color,:created_by)")
-                        ->execute($data+['created_by'=>current_user()['id']]);
-                    $courseId=(int)$pdo->lastInsertId();
-                }
-                generate_sessions($pdo,$courseId);
-                json_response(['status'=>'success','message'=>'Kurs kaydedildi.']);
-            } catch(Exception $e){
-                json_response(['status'=>'error','message'=>'Kurs kaydedilemedi: '.($e->getCode()===23000?'Benzer kayıt mevcut.':$e->getMessage())]);
+        // Öğretmen Kontrolü
+        $stmt = $pdo->prepare("SELECT * FROM teachers WHERE username = ?");
+        $stmt->execute([$u]);
+        $teacher = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $auth = false;
+        if($teacher) {
+            if(password_verify($p, $teacher['password'])) {
+                $auth = true;
+            } elseif ($p === $teacher['password']) {
+                $auth = true; 
             }
-        case 'delete_course':
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $pdo->prepare("DELETE FROM courses WHERE id=?")->execute([(int)($_POST['id']??0)]);
-            json_response(['status'=>'success']);
-        case 'save_student':
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $id=$_POST['student_id']??null;
-            $data=[
-                'full_name'=>trim($_POST['full_name']??''),
-                'tc_no'=>trim($_POST['tc_no']??''),
-                'birth_date'=>$_POST['birth_date']??null,
-                'phone'=>trim($_POST['phone']??''),
-                'email'=>trim($_POST['email']??''),
-                'address'=>trim($_POST['address']??''),
-                'guardian_name'=>trim($_POST['guardian_name']??''),
-                'guardian_phone'=>trim($_POST['guardian_phone']??'')
-            ];
-            if(!$data['full_name']) json_response(['status'=>'error','message'=>'Ad soyad zorunlu.']);
-            if($id){ $data['id']=$id; $pdo->prepare("UPDATE students SET full_name=:full_name, tc_no=:tc_no, birth_date=:birth_date, phone=:phone, email=:email, address=:address, guardian_name=:guardian_name, guardian_phone=:guardian_phone WHERE id=:id")->execute($data); }
-            else { $pdo->prepare("INSERT INTO students (full_name, tc_no, birth_date, phone, email, address, guardian_name, guardian_phone) VALUES (:full_name,:tc_no,:birth_date,:phone,:email,:address,:guardian_name,:guardian_phone)")->execute($data); }
-            json_response(['status'=>'success','message'=>'Öğrenci kaydedildi.']);
-        case 'delete_student':
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            $pdo->prepare("DELETE FROM students WHERE id=?")->execute([(int)($_POST['id']??0)]);
-            json_response(['status'=>'success']);
-        case 'register_student':
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $pdo->prepare("INSERT IGNORE INTO course_registrations (course_id, student_id) VALUES (?,?)")->execute([(int)($_POST['course_id']??0),(int)($_POST['student_id']??0)]);
-            json_response(['status'=>'success','message'=>'Kayıt eklendi.']);
-        case 'save_attendance':
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $sessionId=(int)($_POST['session_id']??0); $entries=$_POST['attendance']??[];
-            foreach($entries as $sid=>$status){ $note=$_POST['notes'][$sid]??''; $pdo->prepare("INSERT INTO attendance (session_id, student_id, status, notes, marked_by) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE status=VALUES(status), notes=VALUES(notes), marked_by=VALUES(marked_by), marked_at=CURRENT_TIMESTAMP")->execute([$sessionId,$sid,$status,$note,current_user()['id']]); }
-            json_response(['status'=>'success','message'=>'Yoklama kaydedildi.']);
-        case 'save_settings':
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            foreach($_POST['settings'] as $k=>$v){ $st=$pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (:k,:v) ON DUPLICATE KEY UPDATE setting_value=:v2"); $st->execute([':k'=>$k,':v'=>$v,':v2'=>$v]); }
-            json_response(['status'=>'success','message'=>'Ayarlar güncellendi.']);
-        case 'save_building':
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $name=trim($_POST['name']??''); $address=trim($_POST['address']??''); $desc=trim($_POST['description']??'');
-            if(!$name) json_response(['status'=>'error','message'=>'Bina adı zorunlu.']);
-            $pdo->prepare("INSERT INTO buildings (name,address,description,status) VALUES (?,?,?,1)")->execute([$name,$address,$desc]);
-            json_response(['status'=>'success','message'=>'Bina eklendi.']);
-        case 'save_classroom':
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $name=trim($_POST['name']??''); $building=(int)($_POST['building_id']??0); $cap=(int)($_POST['capacity']??0); $desc=trim($_POST['description']??'');
-            if(!$name || !$building) json_response(['status'=>'error','message'=>'Bina ve sınıf adı zorunlu.']);
-            $pdo->prepare("INSERT INTO classrooms (building_id,name,capacity,description,status) VALUES (?,?,?,?,1)")->execute([$building,$name,$cap,$desc]);
-            json_response(['status'=>'success','message'=>'Sınıf eklendi.']);
-        case 'save_teacher':
-            if(!is_admin()) json_response(['status'=>'error','message'=>'Yetki yok.']);
-            if(!check_csrf()) json_response(['status'=>'error','message'=>'CSRF doğrulaması başarısız.']);
-            $id=$_POST['teacher_id']??null; $username=trim($_POST['username']??''); $full=trim($_POST['full_name']??''); $email=trim($_POST['email']??''); $phone=trim($_POST['phone']??''); $pass=$_POST['password']??'';
-            if(!$username || !$full) json_response(['status'=>'error','message'=>'Kullanıcı adı ve ad soyad zorunlu.']);
-            if($id){
-                $data=['username'=>$username,'full_name'=>$full,'email'=>$email,'phone'=>$phone,'id'=>$id];
-                $sql="UPDATE users SET username=:username, full_name=:full_name, email=:email, phone=:phone WHERE id=:id";
-                if($pass){ $data['password']=password_hash($pass,PASSWORD_DEFAULT); $sql="UPDATE users SET username=:username, full_name=:full_name, email=:email, phone=:phone, password=:password WHERE id=:id"; }
-                $pdo->prepare($sql)->execute($data);
+        }
+
+        if ($auth) {
+             $tUser = ['id' => $teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
+             echo json_encode(['status' => 'success', 'user' => $tUser]);
+             exit;
+        }
+
+        echo json_encode(['status' => 'error', 'message' => 'Hatalı kullanıcı adı veya şifre']);
+        exit;
+    }
+
+    // ŞİFRE DEĞİŞTİRME
+    if ($action === 'change_password') {
+        $id = $data['id'];
+        $role = $data['role'];
+        $newPass = $data['newPass'];
+        $hash = password_hash($newPass, PASSWORD_DEFAULT);
+
+        if ($role === 'admin') {
+            $pdo->prepare("UPDATE users SET password=? WHERE id=?")->execute([$hash, $id]);
+        } else {
+            $pdo->prepare("UPDATE teachers SET password=? WHERE id=?")->execute([$hash, $id]);
+        }
+        echo json_encode(['status' => 'success']);
+        exit;
+    }
+
+    // VERİLERİ ÇEK
+    if ($action === 'get_all_data') {
+        $response = [];
+        $stmt = $pdo->query("SELECT id, name, username, role FROM users");
+        $response['users'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $stmt = $pdo->query("SELECT * FROM teachers");
+        $response['teachers'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->query("SELECT * FROM courses");
+        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach($courses as &$c) {
+            // JS uyumluluğu için teacherId alanını ekliyoruz
+            $c['teacherId'] = $c['teacher_id']; 
+            
+            $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
+            $c['modifications'] = json_decode($c['modifications']) ?: (object)[];
+            unset($c['cancelled_dates'], $c['modifications_json']);
+        }
+        $response['courses'] = $courses;
+
+        $stmt = $pdo->query("SELECT * FROM students");
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach($students as &$s) {
+            $stmt2 = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id = ?");
+            $stmt2->execute([$s['id']]);
+            $s['courses'] = $stmt2->fetchAll(PDO::FETCH_COLUMN);
+        }
+        $response['students'] = $students;
+
+        $stmt = $pdo->query("SELECT * FROM attendance");
+        $att = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $cleanAtt = [];
+        foreach($att as $a) {
+            $cleanAtt[] = ['courseId' => $a['course_id'], 'studentId' => $a['student_id'], 'date' => $a['date'], 'status' => $a['status']];
+        }
+        $response['attendance'] = $cleanAtt;
+
+        $stmt = $pdo->query("SELECT date, name FROM holidays");
+        $response['holidays'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->query("SELECT * FROM meta_data");
+        $meta = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+        $response['settings'] = ['title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü'];
+        $response['buildings'] = json_decode($meta['buildings'] ?? '[]');
+        $response['classes'] = json_decode($meta['classes'] ?? '[]');
+
+        echo json_encode($response);
+        exit;
+    }
+
+    // KAYDETME İŞLEMLERİ
+    if ($action === 'save_course') {
+        $c = $data;
+        $cancelled = json_encode($c['cancelledDates']);
+        $mods = json_encode($c['modifications']);
+        
+        if (isset($c['id']) && $c['id'] > 0 && !str_starts_with($c['id'], 'new')) {
+            $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=? WHERE id=?";
+            $pdo->prepare($sql)->execute([$c['name'], $c['color'], $c['day'], $c['time'], $c['building'], $c['classroom'], $c['teacherId'], $c['startDate'], $c['endDate'], $cancelled, $mods, $c['id']]);
+        } else {
+            $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications) VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+            $pdo->prepare($sql)->execute([$c['name'], $c['color'], $c['day'], $c['time'], $c['building'], $c['classroom'], $c['teacherId'], $c['startDate'], $c['endDate'], $cancelled, $mods]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'delete_course') {
+        $id = $data['id'];
+        $pdo->prepare("DELETE FROM courses WHERE id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM student_courses WHERE course_id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM attendance WHERE course_id=?")->execute([$id]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'save_student') {
+        $s = $data;
+        $sid = $s['id'];
+        if ($sid && $sid > 0 && !str_starts_with($sid, 'new')) {
+            $sql = "UPDATE students SET name=?, surname=?, phone=?, email=?, tc=?, age=?, education=?, parent_name=?, parent_phone=? WHERE id=?";
+            $pdo->prepare($sql)->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['age'], $s['education'], $s['parent_name'], $s['parent_phone'], $sid]);
+        } else {
+            $sql = "INSERT INTO students (name, surname, phone, email, tc, age, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['age'], $s['education'], $s['parent_name'], $s['parent_phone']]);
+            $sid = $pdo->lastInsertId();
+        }
+
+        $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$sid]);
+        if (!empty($s['courses'])) {
+            $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)");
+            foreach($s['courses'] as $cid) {
+                $insert->execute([$sid, $cid]);
+            }
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'delete_student') {
+        $id = $data['id'];
+        $pdo->prepare("DELETE FROM students WHERE id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM attendance WHERE student_id=?")->execute([$id]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'save_teacher') {
+        $t = $data;
+        if (isset($t['id']) && $t['id'] > 0 && !str_starts_with($t['id'], 'new')) {
+            if(!empty($t['password'])) {
+                 $hash = password_hash($t['password'], PASSWORD_DEFAULT);
+                 $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=?, password=? WHERE id=?")
+                ->execute([$t['name'], $t['phone'], $t['email'], $t['username'], $hash, $t['id']]);
             } else {
-                if(!$pass) json_response(['status'=>'error','message'=>'Şifre zorunlu.']);
-                $pdo->prepare("INSERT INTO users (username,password,full_name,email,phone,role,status) VALUES (?,?,?,?,?,'teacher',1)")
-                    ->execute([$username,password_hash($pass,PASSWORD_DEFAULT),$full,$email,$phone]);
+                 $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=? WHERE id=?")
+                ->execute([$t['name'], $t['phone'], $t['email'], $t['username'], $t['id']]);
             }
-            json_response(['status'=>'success','message'=>'Öğretmen kaydedildi.']);
-        default: json_response(['status'=>'error','message'=>'Bilinmeyen işlem']);
+        } else {
+            $hash = password_hash($t['password'], PASSWORD_DEFAULT);
+            $pdo->prepare("INSERT INTO teachers (name, phone, email, username, password) VALUES (?,?,?,?,?)")
+                ->execute([$t['name'], $t['phone'], $t['email'], $t['username'], $hash]);
+        }
+        echo json_encode(['status'=>'success']); exit;
     }
-}
 
-if(($_GET['action']??'')==='logout'){ session_destroy(); header('Location: ?page=login'); exit; }
-
-$page=$_GET['page'] ?? (current_user()? 'calendar':'login');
-if($page!=='login') require_login();
-
-// Yardımcı veri
-$teachers=fetch_teachers($pdo); $buildings=fetch_buildings($pdo); $classrooms=fetch_classrooms($pdo); $users=fetch_users($pdo);
-$today=date('Y-m-d'); [$weekStart,$weekEnd]=week_range($_GET['date']??$today); $coursesWeek=get_courses_for_week($pdo,$weekStart,$weekEnd); $holidaysWeek=get_holidays($pdo,$weekStart,$weekEnd);
-
-// AJAX bilgi istekleri
-if(isset($_GET['load'])){ json_response(get_course((int)$_GET['load'],$pdo)); }
-if(isset($_GET['attendance'])){
-    $sessionId=(int)$_GET['attendance'];
-    $courseId=$pdo->prepare("SELECT course_id FROM course_sessions WHERE id=?"); $courseId->execute([$sessionId]); $cid=$courseId->fetchColumn();
-    $students=$pdo->prepare("SELECT s.* FROM course_registrations cr JOIN students s ON cr.student_id=s.id WHERE cr.course_id=?"); $students->execute([$cid]);
-    $existing=$pdo->prepare("SELECT student_id,status,notes FROM attendance WHERE session_id=?"); $existing->execute([$sessionId]); $map=['existing'=>[], 'notes'=>[]]; foreach($existing->fetchAll() as $row){ $map['existing'][$row['student_id']]=$row['status']; $map['notes'][$row['student_id']]=$row['notes']; }
-    json_response(['students'=>$students->fetchAll(),'existing'=>$map['existing'],'notes'=>$map['notes']]);
-}
-if(isset($_GET['detail'])){
-    $c=get_course((int)$_GET['detail'],$pdo); if(!$c) json_response(['status'=>'error']);
-    $c['day']=day_name((int)$c['day_of_week']).' '.substr($c['start_time'],0,5).'-'.substr($c['end_time'],0,5);
-    json_response($c);
-}
-if(isset($_GET['export']) && $_GET['export']==='excel'){
-    $start=$_GET['start']??$weekStart; $end=$_GET['end']??$weekEnd;
-    header('Content-Type: application/vnd.ms-excel; charset=utf-8');
-    header('Content-Disposition: attachment; filename="rapor.xls"');
-    echo "\xEF\xBB\xBF";
-    echo "Kurs\tTarih\tSaat\tSınıf\n";
-    foreach(get_courses_for_week($pdo,$start,$end) as $r){
-        echo $r['course_name']."\t".$r['session_date']."\t".substr($r['start_time'],0,5)."-".substr($r['end_time'],0,5)."\t".$r['classroom_name']."\n";
+    if ($action === 'delete_teacher') {
+        $pdo->prepare("DELETE FROM teachers WHERE id=?")->execute([$data['id']]);
+        echo json_encode(['status'=>'success']); exit;
     }
-    exit;
+
+    if ($action === 'save_user') {
+        $u = $data;
+        $hash = password_hash($u['password'], PASSWORD_DEFAULT);
+        $pdo->prepare("INSERT INTO users (name, username, password, role) VALUES (?,?,?,?)")
+            ->execute([$u['name'], $u['username'], $hash, 'admin']);
+        echo json_encode(['status'=>'success']); exit;
+    }
+    
+    if ($action === 'delete_user') {
+        $pdo->prepare("DELETE FROM users WHERE id=?")->execute([$data['id']]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'save_attendance') {
+        $a = $data;
+        $stmt = $pdo->prepare("SELECT id FROM attendance WHERE course_id=? AND student_id=? AND date=?");
+        $stmt->execute([$a['courseId'], $a['studentId'], $a['date']]);
+        $exist = $stmt->fetch();
+
+        if ($exist) {
+            $pdo->prepare("UPDATE attendance SET status=? WHERE id=?")->execute([$a['status'], $exist['id']]);
+        } else {
+            $pdo->prepare("INSERT INTO attendance (course_id, student_id, date, status) VALUES (?,?,?,?)")
+                ->execute([$a['courseId'], $a['studentId'], $a['date'], $a['status']]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'save_meta') {
+        $k = $data['key'];
+        $v = is_array($data['value']) ? json_encode($data['value']) : $data['value'];
+        $pdo->prepare("REPLACE INTO meta_data (item_key, item_value) VALUES (?, ?)")->execute([$k, $v]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'add_holiday') {
+        $pdo->prepare("INSERT INTO holidays (date, name) VALUES (?, ?)")->execute([$data['date'], $data['name']]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+    if ($action === 'delete_holiday') {
+        $pdo->prepare("DELETE FROM holidays WHERE date=?")->execute([$data['date']]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+    
+    if ($action === 'reset_data') {
+        $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+        $pdo->exec("TRUNCATE TABLE attendance");
+        $pdo->exec("TRUNCATE TABLE student_courses");
+        $pdo->exec("TRUNCATE TABLE students");
+        $pdo->exec("TRUNCATE TABLE courses");
+        $pdo->exec("TRUNCATE TABLE teachers");
+        $pdo->exec("TRUNCATE TABLE holidays");
+        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+        echo json_encode(['status'=>'success']); exit;
+    }
 }
 ?>
 <!DOCTYPE html>
 <html lang="tr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Çeşme Belediyesi Kültür Müdürlüğü - Kurs Takip Sistemi</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <style>
-        body { background:#f7f9fb; }
-        .sidebar { min-height:100vh; background:linear-gradient(180deg,#0d6efd,#0b5ed7); color:#fff; }
-        .sidebar a { color:#fff; display:block; padding:10px 14px; text-decoration:none; }
-        .sidebar a:hover, .sidebar a.active { background:rgba(255,255,255,0.15); }
-        .calendar-grid { display:grid; grid-template-columns:80px repeat(7,1fr); border:1px solid #e5e7eb; }
-        .time-slot { height:60px; border-bottom:1px solid #e5e7eb; font-size:12px; padding:4px; }
-        .day-column { position:relative; border-left:1px solid #e5e7eb; }
-        .day-header { background:#f0f4f8; padding:8px; border-bottom:1px solid #e5e7eb; text-align:center; font-weight:600; }
-        .day-slots { height:840px; position:relative; }
-        .course-block { position:absolute; left:6px; right:6px; color:#fff; padding:8px; border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.12); cursor:pointer; }
-        .holiday-banner { position:absolute; inset:0; background:repeating-linear-gradient(45deg, rgba(255,99,71,0.15), rgba(255,99,71,0.15) 10px, rgba(255,99,71,0.08) 10px, rgba(255,99,71,0.08) 20px); }
-        .toast-container { position:fixed; top:1rem; right:1rem; z-index:1055; }
-        @media(max-width:992px){ .sidebar{display:none;} .mobile-nav{display:flex!important; gap:8px;} .calendar-grid{grid-template-columns:60px repeat(7,minmax(180px,1fr)); overflow-x:auto;} .day-slots{height:960px;} }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Çeşme Belediyesi Kültür Müdürlüğü - Kurs Takip</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#f0f4f8;min-height:100vh;position:relative;padding-bottom:30px;}
+.header{background:linear-gradient(135deg,#1e3a5f,#2d5a87);color:#fff;padding:15px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.header h1{font-size:1.2em;margin:0}
+.header span{font-size:0.9em;opacity:0.9}
+.nav{background:#2d5a87;padding:10px;display:flex;flex-wrap:wrap;gap:5px}
+.nav button{background:#fff;border:none;padding:8px 15px;border-radius:5px;cursor:pointer;font-size:0.85em;transition:all 0.2s}
+.nav button:hover,.nav button.active{background:#ffd700;color:#1e3a5f}
+.container{padding:15px;max-width:1400px;margin:0 auto}
+.card{background:#fff;border-radius:10px;padding:15px;margin-bottom:15px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}
+.card h2{color:#1e3a5f;margin-bottom:15px;font-size:1.1em;border-bottom:2px solid #ffd700;padding-bottom:5px}
+.form-group{margin-bottom:12px}
+.form-group label{display:block;margin-bottom:5px;font-weight:600;color:#333;font-size:0.9em}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:5px;font-size:0.9em}
+.form-group input[type="color"] {padding: 2px; height: 40px; cursor: pointer;}
+.checkbox-group {max-height: 150px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 5px; background: #fafafa;}
+.checkbox-item {display: flex; align-items: center; margin-bottom: 5px;}
+.checkbox-item input {width: auto; margin-right: 10px;}
+.btn{padding:10px 20px;border:none;border-radius:5px;cursor:pointer;font-size:0.9em;margin:2px;display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.btn-primary{background:#1e3a5f;color:#fff}
+.btn-success{background:#28a745;color:#fff}
+.btn-danger{background:#dc3545;color:#fff}
+.btn-warning{background:#ffc107;color:#333}
+.btn-info{background:#17a2b8;color:#fff}
+.btn-secondary{background:#6c757d;color:#fff}
+.btn:hover{opacity:0.9;transform:scale(1.02)}
+/* Calendar Styles */
+.calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.cal-header{background:#1e3a5f;color:#fff;padding:10px;text-align:center;font-weight:600;font-size:0.85em}
+.cal-cell{background:#fff;min-height:120px;border:1px solid #ddd;padding:5px;cursor:pointer;font-size:0.8em;position:relative;transition:all 0.2s}
+.calendar.month-view .cal-cell { min-height: 90px; }
+.cal-cell:hover{filter:brightness(0.95)}
+.cal-cell.today{border:3px solid #1e3a5f;z-index:2}
+.cal-cell.weekend{background-color:#fff3e0;}
+.cal-cell.holiday{background-color:#f8d7da;border:1px solid #f5c6cb;}
+.cal-cell.other-month{background:#f9f9f9;opacity:0.5;color:#999}
+.cal-date{font-weight:600;color:#1e3a5f;margin-bottom:5px;display:flex;justify-content:space-between}
+.cal-holiday-label{color:#dc3545;font-size:0.75em;font-weight:bold;display:block;margin-bottom:3px}
+.course-tag{padding:4px 6px;border-radius:4px;margin:3px 0;font-size:0.75em;cursor:pointer;display:block;border-left:4px solid rgba(0,0,0,0.2);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.1)}
+.course-tag:hover{filter:brightness(0.9)}
+.course-tag.cancelled{background:#ffcdd2!important;color:#333!important;text-decoration:line-through;border-left-color:#dc3545}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;overflow-y:auto}
+.modal-content{background:#fff;margin:20px auto;padding:20px;border-radius:10px;max-width:600px;width:95%;max-height:90vh;overflow-y:auto}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px}
+.modal-close{font-size:1.5em;cursor:pointer;color:#666}
+.table-responsive {width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;}
+table{width:100%;border-collapse:collapse;font-size:0.85em;min-width: 600px;}
+th,td{padding:10px;border:1px solid #ddd;text-align:left}
+th{background:#1e3a5f;color:#fff}
+tr:nth-child(even){background:#f9f9f9}
+.login-container{max-width:400px;margin:50px auto;padding:20px}
+.hidden{display:none!important}
+.week-nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;flex-wrap:wrap;gap:10px}
+.view-toggle{display:flex;gap:5px}
+.attendance-list{max-height:300px;overflow-y:auto}
+.attendance-item{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #eee;flex-wrap: wrap; gap:10px;}
+.attendance-actions{display:flex;gap:5px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
+.stat-card{background:linear-gradient(135deg,#1e3a5f,#2d5a87);color:#fff;padding:15px;border-radius:10px;text-align:center}
+.stat-card h3{font-size:1.8em}
+.stat-card p{font-size:0.85em;opacity:0.9}
+.conflict{background:#fff3cd;padding:10px;border-radius:5px;border-left:4px solid #ffc107;margin:10px 0}
+.tabs{display:flex;gap:5px;margin-bottom:15px;flex-wrap:wrap}
+.tab{padding:10px 20px;background:#e9ecef;border:none;cursor:pointer;border-radius:5px 5px 0 0;flex:1;min-width: 100px;}
+.tab.active{background:#1e3a5f;color:#fff}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.filter-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;align-items:flex-end;background:#f8f9fa;padding:15px;border-radius:10px;border:1px solid #e9ecef}
+.filter-row > .form-group {flex:1;min-width:180px;margin-bottom:0}
+.export-buttons {margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;}
+footer {position: absolute; bottom: 5px; width: 100%; text-align: center; font-size: 0.8em; color: rgba(0,0,0,0.3); font-style: italic;}
+
+@media(max-width:768px){
+    .calendar.month-view {grid-template-columns:repeat(1,1fr)!important;}
+    .calendar.month-view .cal-header{display:none!important;}
+    .calendar.month-view .cal-cell::before{content:attr(data-day);font-weight:600;display:block;margin-bottom:5px;color:#1e3a5f}
+    .calendar:not(.month-view) {grid-template-columns:repeat(1,1fr)}
+    .cal-header{display:none}
+    .calendar:not(.month-view) .cal-cell::before{content:attr(data-day);font-weight:600;display:block;margin-bottom:5px;color:#1e3a5f}
+    .header h1{font-size:1em}
+    .nav button {flex: 1 0 45%; text-align: center;}
+    .filter-row {flex-direction: column; align-items: stretch;}
+    .filter-row > .form-group {width: 100%;}
+    .week-nav {justify-content: center;}
+    .week-nav h2 {font-size: 1.1em; margin: 10px 0; width: 100%; text-align: center;}
+}
+</style>
 </head>
 <body>
-<div class="toast-container"></div>
-<?php if($page!=='login'): ?>
-<div class="container-fluid">
-    <div class="row">
-        <nav class="col-lg-2 sidebar p-0">
-            <div class="p-3 border-bottom border-light d-flex align-items-center gap-2">
-                <i class="fa-solid fa-school fa-lg"></i>
-                <div><div class="fw-bold">Kurs Takip Sistemi</div><small><?= e(current_user()['full_name']) ?></small></div>
-            </div>
-            <ul class="list-unstyled mb-0">
-                <li><a class="<?= $page==='calendar'?'active':'' ?>" href="?page=calendar"><i class="fa-solid fa-calendar me-2"></i>Takvim</a></li>
-                <li><a class="<?= $page==='courses'?'active':'' ?>" href="?page=courses"><i class="fa-solid fa-book me-2"></i>Kurslar</a></li>
-                <li><a class="<?= $page==='students'?'active':'' ?>" href="?page=students"><i class="fa-solid fa-user-graduate me-2"></i>Öğrenciler</a></li>
-                <li><a class="<?= $page==='attendance'?'active':'' ?>" href="?page=attendance"><i class="fa-solid fa-clipboard-check me-2"></i>Yoklama</a></li>
-                <?php if(is_admin()): ?>
-                <li><a class="<?= $page==='teachers'?'active':'' ?>" href="?page=teachers"><i class="fa-solid fa-chalkboard-teacher me-2"></i>Öğretmenler</a></li>
-                <li><a class="<?= $page==='locations'?'active':'' ?>" href="?page=locations"><i class="fa-solid fa-building me-2"></i>Binalar & Sınıflar</a></li>
-                <li><a class="<?= $page==='holidays'?'active':'' ?>" href="?page=holidays"><i class="fa-solid fa-umbrella-beach me-2"></i>Tatiller</a></li>
-                <li><a class="<?= $page==='reports'?'active':'' ?>" href="?page=reports"><i class="fa-solid fa-chart-bar me-2"></i>Raporlar</a></li>
-                <li><a class="<?= $page==='users'?'active':'' ?>" href="?page=users"><i class="fa-solid fa-users-cog me-2"></i>Kullanıcılar</a></li>
-                <li><a class="<?= $page==='settings'?'active':'' ?>" href="?page=settings"><i class="fa-solid fa-cog me-2"></i>Ayarlar</a></li>
-                <?php endif; ?>
-                <li><a href="?action=logout"><i class="fa-solid fa-right-from-bracket me-2"></i>Çıkış</a></li>
-            </ul>
-        </nav>
-        <main class="col-lg-10 p-3">
-            <div class="mobile-nav mb-3" style="display:none;">
-                <a href="?page=calendar" class="btn btn-primary btn-sm flex-fill">Takvim</a>
-                <a href="?page=courses" class="btn btn-outline-primary btn-sm flex-fill">Kurslar</a>
-                <a href="?page=students" class="btn btn-outline-primary btn-sm flex-fill">Öğrenciler</a>
-                <a href="?action=logout" class="btn btn-outline-danger btn-sm flex-fill">Çıkış</a>
-            </div>
-            <?php if($page==='calendar'): ?>
-                <div class="d-flex flex-wrap align-items-center justify-content-between mb-3">
-                    <div class="d-flex gap-2">
-                        <a class="btn btn-outline-secondary btn-sm" href="?page=calendar&date=<?= date('Y-m-d', strtotime('-7 days', strtotime($weekStart))) ?>">← Önceki Hafta</a>
-                        <a class="btn btn-outline-secondary btn-sm" href="?page=calendar">Bugün</a>
-                        <a class="btn btn-outline-secondary btn-sm" href="?page=calendar&date=<?= date('Y-m-d', strtotime('+7 days', strtotime($weekStart))) ?>">Sonraki Hafta →</a>
-                    </div>
-                    <div class="d-flex align-items-center gap-2">
-                        <div class="fw-semibold">Hafta: <?= date('d M', strtotime($weekStart)) ?> - <?= date('d M Y', strtotime($weekEnd)) ?></div>
-                        <?php if(is_admin()): ?><button class="btn btn-primary btn-sm" onclick="openCourseModal()"><i class="fa fa-plus"></i> Yeni Kurs</button><?php endif; ?>
-                    </div>
-                </div>
-                <div class="calendar-grid mb-4">
-                    <div class="time-column">
-                        <?php for($h=8;$h<=22;$h++): ?><div class="time-slot"><?= sprintf('%02d:00',$h) ?></div><?php endfor; ?>
-                    </div>
-                    <?php for($d=0;$d<7;$d++): $date=date('Y-m-d', strtotime("+{$d} day", strtotime($weekStart))); ?>
-                        <div class="day-column">
-                            <div class="day-header"><?= day_name((int)date('N', strtotime($date))) ?><br><small><?= date('d M', strtotime($date)) ?></small></div>
-                            <div class="day-slots" onclick="<?php if(is_admin()): ?>openCourseModal('<?= $date ?>')<?php else: ?>''<?php endif; ?>">
-                                <?php foreach($holidaysWeek as $hol): if($hol['holiday_date']===$date || ($hol['recurring_yearly'] && date('m-d', strtotime($hol['holiday_date']))===date('m-d', strtotime($date)))): ?><div class="holiday-banner" title="<?= e($hol['name']) ?>"></div><?php endif; endforeach; ?>
-                                <?php foreach($coursesWeek as $cs): if($cs['session_date']===$date): $startMin=((int)date('G', strtotime($cs['start_time']))-8)*60 + (int)date('i', strtotime($cs['start_time'])); $dur=(strtotime($cs['end_time'])-strtotime($cs['start_time']))/60; $top=max(0,$startMin); $height=max(45,$dur); ?>
-                                    <div class="course-block" style="top:<?= $top ?>px; height:<?= $height ?>px; background:<?= e($cs['color']?:'#3788d8') ?>;" onclick="event.stopPropagation();openCourseDetail(<?= (int)$cs['course_id'] ?>);">
-                                        <strong><?= e($cs['course_name']) ?></strong><br>
-                                        <small><?= substr($cs['start_time'],0,5) ?> - <?= substr($cs['end_time'],0,5) ?></small><br>
-                                        <small><?= e($cs['teacher_name'] ?? 'Öğretmen') ?></small><br>
-                                        <small><?= e(($cs['building_name']??'').' '.$cs['classroom_name']) ?></small>
-                                    </div>
-                                <?php endif; endforeach; ?>
-                            </div>
-                        </div>
-                    <?php endfor; ?>
-                </div>
-            <?php elseif($page==='courses'): ?>
-                <div class="d-flex justify-content-between align-items-center mb-3"><h5>Kurslar</h5><?php if(is_admin()): ?><button class="btn btn-primary btn-sm" onclick="openCourseModal()"><i class="fa fa-plus"></i> Yeni Kurs</button><?php endif; ?></div>
-                <div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>Adı</th><th>Öğretmen</th><th>Gün/Saat</th><th>Sınıf</th><th></th></tr></thead><tbody>
-                <?php foreach($pdo->query("SELECT c.*, u.full_name AS teacher_name, cl.name AS classroom_name FROM courses c LEFT JOIN users u ON c.teacher_id=u.id LEFT JOIN classrooms cl ON c.classroom_id=cl.id ORDER BY c.start_date DESC") as $r): ?>
-                    <tr><td><?= e($r['name']) ?></td><td><?= e($r['teacher_name']) ?></td><td><?= day_name((int)$r['day_of_week']).' '.substr($r['start_time'],0,5).'-'.substr($r['end_time'],0,5) ?></td><td><?= e($r['classroom_name']) ?></td><td class="text-end"><button class="btn btn-outline-secondary btn-sm" onclick="openCourseModal(null,<?= (int)$r['id'] ?>)"><i class="fa fa-pen"></i></button><?php if(is_admin()): ?><button class="btn btn-outline-danger btn-sm" onclick="deleteCourse(<?= (int)$r['id'] ?>)"><i class="fa fa-trash"></i></button><?php endif; ?></td></tr>
-                <?php endforeach; ?>
-                </tbody></table></div>
-            <?php elseif($page==='students'): ?>
-                <div class="d-flex justify-content-between align-items-center mb-3"><h5>Öğrenciler</h5><button class="btn btn-primary btn-sm" onclick="openStudentModal()"><i class="fa fa-plus"></i> Yeni Öğrenci</button></div>
-                <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th></th></tr></thead><tbody>
-                <?php foreach($pdo->query("SELECT * FROM students ORDER BY created_at DESC") as $s): ?>
-                    <tr><td><?= e($s['full_name']) ?></td><td><?= e($s['phone']) ?></td><td><?= e($s['email']) ?></td><td class="text-end"><button class="btn btn-outline-secondary btn-sm" onclick='openStudentModal(<?= json_encode($s) ?>)'><i class="fa fa-pen"></i></button><?php if(is_admin()): ?><button class="btn btn-outline-danger btn-sm" onclick="deleteStudent(<?= (int)$s['id'] ?>)"><i class="fa fa-trash"></i></button><?php endif; ?></td></tr>
-                <?php endforeach; ?>
-                </tbody></table></div>
-            <?php elseif($page==='attendance'): ?>
-                <div class="d-flex align-items-center justify-content-between mb-3"><h5>Yoklama</h5></div>
-                <?php $upcoming=$pdo->query("SELECT cs.*, c.name AS course_name FROM course_sessions cs JOIN courses c ON cs.course_id=c.id WHERE cs.session_date>=CURDATE() ORDER BY cs.session_date, cs.start_time LIMIT 50")->fetchAll(); ?>
-                <div class="row g-3">
-                <?php foreach($upcoming as $cs): ?>
-                    <div class="col-md-6"><div class="card shadow-sm"><div class="card-body d-flex justify-content-between align-items-center"><div><div class="fw-bold"><?= e($cs['course_name']) ?></div><div class="text-muted small"><?= e($cs['session_date'].' '.$cs['start_time'].'-'.$cs['end_time']) ?></div></div><button class="btn btn-primary btn-sm" onclick="openAttendanceModal(<?= (int)$cs['id'] ?>)">Yoklama Al</button></div></div></div>
-                <?php endforeach; ?>
-                </div>
-            <?php elseif($page==='teachers'): ?>
-                <div class="d-flex justify-content-between align-items-center mb-3"><h5>Öğretmenler</h5><button class="btn btn-primary btn-sm" onclick="openTeacherModal()"><i class="fa fa-plus"></i> Yeni Öğretmen</button></div>
-                <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad Soyad</th><th>Kullanıcı</th><th></th></tr></thead><tbody><?php foreach($pdo->query("SELECT * FROM users WHERE role='teacher'") as $t): ?><tr><td><?= e($t['full_name']) ?></td><td><?= e($t['username']) ?></td><td class="text-end"><button class="btn btn-outline-secondary btn-sm" onclick='openTeacherModal(<?= json_encode($t) ?>)'><i class="fa fa-pen"></i></button></td></tr><?php endforeach; ?></tbody></table></div>
-            <?php elseif($page==='locations'): ?>
-                <div class="d-flex justify-content-between align-items-center mb-3"><h5>Binalar ve Sınıflar</h5><div class="d-flex gap-2"><button class="btn btn-primary btn-sm" onclick="openBuildingModal()"><i class="fa fa-plus"></i> Yeni Bina</button><button class="btn btn-outline-primary btn-sm" onclick="openClassroomModal()"><i class="fa fa-door-open"></i> Yeni Sınıf</button></div></div><div class="row g-3"><div class="col-md-6"><div class="card h-100"><div class="card-header">Binalar</div><div class="card-body"><ul class="list-group"><?php foreach($buildings as $b): ?><li class="list-group-item d-flex justify-content-between"><span><?= e($b['name']) ?></span><small class="text-muted">ID:<?= (int)$b['id'] ?></small></li><?php endforeach; ?></ul></div></div></div><div class="col-md-6"><div class="card h-100"><div class="card-header">Sınıflar</div><div class="card-body"><ul class="list-group"><?php foreach($classrooms as $c): ?><li class="list-group-item d-flex justify-content-between"><span><?= e($c['name']) ?></span><small class="text-muted">Bina <?= (int)$c['building_id'] ?> · Kapasite <?= (int)$c['capacity'] ?></small></li><?php endforeach; ?></ul></div></div></div></div>
-            <?php elseif($page==='holidays'): ?>
-                <h5>Tatiller</h5><div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad</th><th>Tarih</th><th>Tekrar</th></tr></thead><tbody><?php foreach($pdo->query("SELECT * FROM holidays ORDER BY holiday_date") as $h): ?><tr><td><?= e($h['name']) ?></td><td><?= e($h['holiday_date']) ?></td><td><?= $h['recurring_yearly']?'Evet':'Hayır' ?></td></tr><?php endforeach; ?></tbody></table></div>
-            <?php elseif($page==='reports'): ?>
-                <div class="card"><div class="card-body"><h5>Raporlar</h5><p class="text-muted">Tarih aralığı seçerek kurs oturumlarını Excel olarak indirebilirsiniz.</p><div class="d-flex gap-2 mb-3"><input type="date" id="rStart" class="form-control" value="<?= e($weekStart) ?>"><input type="date" id="rEnd" class="form-control" value="<?= e($weekEnd) ?>"><button class="btn btn-success" onclick="exportExcel()"><i class="fa fa-file-excel"></i> Excel İndir</button><button class="btn btn-outline-secondary" onclick="window.print()"><i class="fa fa-print"></i> Yazdır</button></div></div></div>
-            <?php elseif($page==='users'): ?>
-                <h5>Kullanıcılar</h5><div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Ad Soyad</th><th>Kullanıcı</th><th>Rol</th></tr></thead><tbody><?php foreach($users as $u): ?><tr><td><?= e($u['full_name']) ?></td><td><?= e($u['username']) ?></td><td><?= e($u['role']) ?></td></tr><?php endforeach; ?></tbody></table></div>
-            <?php elseif($page==='settings'): ?>
-                <div class="card"><div class="card-body"><h5>Ayarlar</h5><form id="settingsForm"><input type="hidden" name="action" value="save_settings"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><div class="row g-3"><div class="col-md-6"><label class="form-label">Site Başlığı</label><input class="form-control" name="settings[site_title]" value="<?= e($pdo->query("SELECT setting_value FROM settings WHERE setting_key='site_title'")->fetchColumn() ?: 'Çeşme Belediyesi Kültür Müdürlüğü') ?>"></div><div class="col-md-6"><label class="form-label">Alt Başlık</label><input class="form-control" name="settings[site_subtitle]" value="<?= e($pdo->query("SELECT setting_value FROM settings WHERE setting_key='site_subtitle'")->fetchColumn() ?: 'Kurs Takip Sistemi') ?>"></div><div class="col-md-4"><label class="form-label">Çalışma Başlangıç</label><input type="time" class="form-control" name="settings[working_hours_start]" value="<?= e($pdo->query("SELECT setting_value FROM settings WHERE setting_key='working_hours_start'")->fetchColumn() ?: '08:00') ?>"></div><div class="col-md-4"><label class="form-label">Çalışma Bitiş</label><input type="time" class="form-control" name="settings[working_hours_end]" value="<?= e($pdo->query("SELECT setting_value FROM settings WHERE setting_key='working_hours_end'")->fetchColumn() ?: '22:00') ?>"></div><div class="col-md-4"><label class="form-label">Zaman Dilimi (dk)</label><input type="number" class="form-control" name="settings[time_slot_duration]" value="<?= e($pdo->query("SELECT setting_value FROM settings WHERE setting_key='time_slot_duration'")->fetchColumn() ?: '30') ?>"></div></div><div class="text-end mt-3"><button type="button" class="btn btn-primary" onclick="submitSettings()">Kaydet</button></div></form></div></div>
-            <?php endif; ?>
-        </main>
-    </div>
+<div id="loginPage" class="login-container">
+<div class="card">
+<h2>🏛️ Çeşme Belediyesi Kültür Müdürlüğü</h2>
+<p style="margin-bottom:20px;color:#666">Kurs Takip Sistemi (Web v1.6)</p>
+<div class="form-group"><label>Kullanıcı Adı</label><input type="text" id="loginUser"></div>
+<div class="form-group"><label>Şifre</label><input type="password" id="loginPass"></div>
+<div class="form-group" style="display:flex;align-items:center;gap:10px">
+    <input type="checkbox" id="rememberMe" style="width:auto;margin:0;">
+    <label for="rememberMe" style="margin:0;font-weight:normal;cursor:pointer">Beni Hatırla</label>
 </div>
-<?php else: ?>
-<div class="container py-5"><div class="row justify-content-center"><div class="col-md-4"><div class="card shadow-sm"><div class="card-body"><div class="text-center mb-3"><i class="fa-solid fa-school fa-2x text-primary"></i><h5 class="mt-2">Kurs Takip Sistemi</h5><p class="text-muted small">Çeşme Belediyesi Kültür Müdürlüğü</p></div><form id="loginForm"><input type="hidden" name="action" value="login"><div class="mb-3"><label class="form-label">Kullanıcı Adı</label><input class="form-control" name="username" required></div><div class="mb-3"><label class="form-label">Şifre</label><input type="password" class="form-control" name="password" required></div><button class="btn btn-primary w-100" type="submit">Giriş Yap</button></form></div></div></div></div></div>
-<?php endif; ?>
-
-<div class="modal fade" id="courseModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Kurs Formu</h5><button class="btn-close" type="button" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="courseForm"><input type="hidden" name="action" value="save_course"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="course_id" id="course_id"><div class="row g-3"><div class="col-md-6"><label class="form-label">Kurs Adı</label><input class="form-control" name="name" id="course_name" required></div><div class="col-md-6"><label class="form-label">Öğretmen</label><select class="form-select" name="teacher_id" id="course_teacher"><option value="">Seçiniz</option><?php foreach($teachers as $t): ?><option value="<?= $t['id'] ?>"><?= e($t['full_name']) ?></option><?php endforeach; ?></select></div><div class="col-12"><label class="form-label">Açıklama</label><textarea class="form-control" name="description" id="course_description"></textarea></div><div class="col-md-4"><label class="form-label">Gün</label><select class="form-select" name="day_of_week" id="course_day"><?php for($i=1;$i<=7;$i++): ?><option value="<?= $i ?>"><?= day_name($i) ?></option><?php endfor; ?></select></div><div class="col-md-4"><label class="form-label">Başlangıç</label><input type="time" class="form-control" name="start_time" id="course_start" required></div><div class="col-md-4"><label class="form-label">Bitiş</label><input type="time" class="form-control" name="end_time" id="course_end" required></div><div class="col-md-6"><label class="form-label">Kurs Başlangıç</label><input type="date" class="form-control" name="start_date" id="course_start_date" required></div><div class="col-md-6"><label class="form-label">Kurs Bitiş</label><input type="date" class="form-control" name="end_date" id="course_end_date" required></div><div class="col-md-6"><label class="form-label">Bina</label><select class="form-select" id="course_building" onchange="filterClassrooms(this.value)"><option value="">Seçiniz</option><?php foreach($buildings as $b): ?><option value="<?= $b['id'] ?>"><?= e($b['name']) ?></option><?php endforeach; ?></select></div><div class="col-md-6"><label class="form-label">Sınıf</label><select class="form-select" name="classroom_id" id="course_classroom" required><option value="">Seçiniz</option><?php foreach($classrooms as $c): ?><option data-building="<?= $c['building_id'] ?>" value="<?= $c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select></div><div class="col-md-4"><label class="form-label">Renk</label><input type="color" class="form-control form-control-color" name="color" id="course_color" value="#3788d8"></div></div></form><div class="alert alert-warning mt-3 d-none" id="conflictAlert"></div></div><div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" type="button" onclick="saveCourse()">Kaydet</button></div></div></div></div>
-
-<div class="modal fade" id="studentModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Öğrenci Formu</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="studentForm"><input type="hidden" name="action" value="save_student"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="student_id" id="student_id"><div class="mb-2"><label class="form-label">Ad Soyad</label><input class="form-control" name="full_name" id="student_full_name" required></div><div class="mb-2"><label class="form-label">T.C. No</label><input class="form-control" name="tc_no" id="student_tc" maxlength="11"></div><div class="mb-2"><label class="form-label">Doğum Tarihi</label><input type="date" class="form-control" name="birth_date" id="student_birth"></div><div class="mb-2"><label class="form-label">Telefon</label><input class="form-control" name="phone" id="student_phone"></div><div class="mb-2"><label class="form-label">E-posta</label><input class="form-control" name="email" id="student_email"></div><div class="mb-2"><label class="form-label">Adres</label><textarea class="form-control" name="address" id="student_address"></textarea></div><div class="mb-2"><label class="form-label">Veli Adı</label><input class="form-control" name="guardian_name" id="student_guardian"></div><div class="mb-2"><label class="form-label">Veli Telefonu</label><input class="form-control" name="guardian_phone" id="student_guardian_phone"></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveStudent()">Kaydet</button></div></div></div></div>
-
-<div class="modal fade" id="attendanceModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Yoklama</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="attendanceBody">Yükleniyor...</div></div></div></div>
-<div class="modal fade" id="courseDetailModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Kurs Detayı</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="courseDetailBody">Yükleniyor...</div></div></div></div>
-
-<?php if(is_admin()): ?>
-<div class="modal fade" id="buildingModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Bina Ekle</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="buildingForm"><input type="hidden" name="action" value="save_building"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><div class="mb-2"><label class="form-label">Bina Adı</label><input class="form-control" name="name" required></div><div class="mb-2"><label class="form-label">Adres</label><textarea class="form-control" name="address"></textarea></div><div class="mb-2"><label class="form-label">Açıklama</label><textarea class="form-control" name="description"></textarea></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveBuilding()">Kaydet</button></div></div></div></div>
-
-<div class="modal fade" id="classroomModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Sınıf Ekle</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="classroomForm"><input type="hidden" name="action" value="save_classroom"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><div class="mb-2"><label class="form-label">Bina</label><select class="form-select" name="building_id" required><option value="">Seçiniz</option><?php foreach($buildings as $b): ?><option value="<?= $b['id'] ?>"><?= e($b['name']) ?></option><?php endforeach; ?></select></div><div class="mb-2"><label class="form-label">Sınıf Adı</label><input class="form-control" name="name" required></div><div class="mb-2"><label class="form-label">Kapasite</label><input type="number" class="form-control" name="capacity" value="0" min="0"></div><div class="mb-2"><label class="form-label">Açıklama</label><textarea class="form-control" name="description"></textarea></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveClassroom()">Kaydet</button></div></div></div></div>
-
-<div class="modal fade" id="teacherModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Öğretmen Formu</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><form id="teacherForm"><input type="hidden" name="action" value="save_teacher"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="teacher_id" id="teacher_id"><div class="mb-2"><label class="form-label">Kullanıcı Adı</label><input class="form-control" name="username" id="teacher_username" required></div><div class="mb-2"><label class="form-label">Şifre <small class="text-muted">(Düzenlemede boş bırakabilirsiniz)</small></label><input type="password" class="form-control" name="password" id="teacher_password"></div><div class="mb-2"><label class="form-label">Ad Soyad</label><input class="form-control" name="full_name" id="teacher_full_name" required></div><div class="mb-2"><label class="form-label">E-posta</label><input class="form-control" name="email" id="teacher_email"></div><div class="mb-2"><label class="form-label">Telefon</label><input class="form-control" name="phone" id="teacher_phone"></div></form></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button><button class="btn btn-primary" onclick="saveTeacher()">Kaydet</button></div></div></div></div>
-<?php endif; ?>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<button class="btn btn-primary" style="width:100%" onclick="apiLogin()">Giriş Yap</button>
+</div>
+</div>
+<div id="mainApp" class="hidden">
+<div class="header">
+<div><h1>🏛️ Çeşme Belediyesi Kültür Müdürlüğü</h1><span>Kurs Takip Sistemi</span></div>
+<div>
+    <span id="currentUser"></span> 
+    <button class="btn btn-info btn-sm" onclick="openChangePasswordModal()">🔑 Şifre Değiştir</button>
+    <button class="btn btn-danger btn-sm" onclick="logout()">Çıkış</button>
+</div>
+</div>
+<div class="nav" id="navBar"></div>
+<div class="container" id="mainContent"></div>
+</div>
+<div class="modal" id="modal"><div class="modal-content" id="modalContent"></div></div>
+<footer>Created by İlhan Akdeniz</footer>
 <script>
-const courseModal=new bootstrap.Modal(document.getElementById('courseModal')); const studentModal=new bootstrap.Modal(document.getElementById('studentModal')); const attendanceModal=new bootstrap.Modal(document.getElementById('attendanceModal')); const courseDetailModal=new bootstrap.Modal(document.getElementById('courseDetailModal'));
-function showToast(message,type='success'){ const cont=document.querySelector('.toast-container'); const div=document.createElement('div'); div.className='toast align-items-center text-bg-'+(type==='error'?'danger':'primary')+' border-0'; div.innerHTML=`<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`; cont.appendChild(div); const t=new bootstrap.Toast(div,{delay:3000}); t.show(); div.addEventListener('hidden.bs.toast',()=>div.remove()); }
-function ajax(action,data,cb){ const params=new URLSearchParams(data); params.append('action',action); fetch('',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:params.toString()}).then(r=>r.json()).then(cb).catch(()=>showToast('Hata','error')); }
-function openCourseModal(date=null,id=null){ document.getElementById('courseForm').reset(); document.getElementById('conflictAlert').classList.add('d-none'); document.getElementById('course_id').value=''; if(date){ document.getElementById('course_start_date').value=date; document.getElementById('course_end_date').value=date; } if(id){ fetch('?load='+id).then(r=>r.json()).then(d=>{ document.getElementById('course_id').value=d.id; document.getElementById('course_name').value=d.name; document.getElementById('course_teacher').value=d.teacher_id; document.getElementById('course_description').value=d.description; document.getElementById('course_day').value=d.day_of_week; document.getElementById('course_start').value=d.start_time; document.getElementById('course_end').value=d.end_time; document.getElementById('course_start_date').value=d.start_date; document.getElementById('course_end_date').value=d.end_date; document.getElementById('course_classroom').value=d.classroom_id; document.getElementById('course_color').value=d.color; }); }
-    courseModal.show(); }
-function saveCourse(){ const form=document.getElementById('courseForm'); const data=new FormData(form); fetch('',{method:'POST',body:data}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); courseModal.hide(); setTimeout(()=>location.reload(),600);} else if(res.status==='conflict'){ const al=document.getElementById('conflictAlert'); al.textContent=res.message; al.classList.remove('d-none'); } else showToast(res.message,'error'); }).catch(()=>showToast('Kayıt hatası','error')); }
-function deleteCourse(id){ if(!confirm('Kurs silinsin mi?')) return; ajax('delete_course',{id:id,csrf_token:'<?= csrf_token() ?>'},res=>{ if(res.status==='success'){ showToast('Silindi'); location.reload(); } else showToast(res.message,'error'); }); }
-function filterClassrooms(bid){ document.querySelectorAll('#course_classroom option').forEach(o=>{ if(!o.value) return o.hidden=false; o.hidden = bid && o.dataset.building!==bid; }); }
-function openStudentModal(data=null){ document.getElementById('studentForm').reset(); document.getElementById('student_id').value=''; if(data){ document.getElementById('student_id').value=data.id; document.getElementById('student_full_name').value=data.full_name; document.getElementById('student_tc').value=data.tc_no; document.getElementById('student_birth').value=data.birth_date; document.getElementById('student_phone').value=data.phone; document.getElementById('student_email').value=data.email; document.getElementById('student_address').value=data.address; document.getElementById('student_guardian').value=data.guardian_name; document.getElementById('student_guardian_phone').value=data.guardian_phone; } studentModal.show(); }
-function saveStudent(){ const form=new FormData(document.getElementById('studentForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); studentModal.hide(); setTimeout(()=>location.reload(),600);} else showToast(res.message,'error'); }); }
-function deleteStudent(id){ if(!confirm('Öğrenci silinsin mi?')) return; ajax('delete_student',{id:id,csrf_token:'<?= csrf_token() ?>'},res=>{ if(res.status==='success'){ location.reload(); } else showToast(res.message,'error'); }); }
-function openAttendanceModal(sessionId){ const body=document.getElementById('attendanceBody'); body.innerHTML='Yükleniyor...'; fetch('?attendance='+sessionId).then(r=>r.json()).then(data=>{ let html=`<form id="attendanceForm"><input type="hidden" name="action" value="save_attendance"><input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="session_id" value="${sessionId}">`; data.students.forEach(st=>{ const status=data.existing[st.id]||''; html+=`<div class="border rounded p-2 mb-2"><div class="fw-semibold">${st.full_name}</div><div class="d-flex gap-2 mt-1"><label class="form-check"><input class="form-check-input" type="radio" name="attendance[${st.id}]" value="present" ${status==='present'?'checked':''}> <span class="text-success">Geldi</span></label><label class="form-check"><input class="form-check-input" type="radio" name="attendance[${st.id}]" value="absent" ${status==='absent'?'checked':''}> <span class="text-danger">Gelmedi</span></label><label class="form-check"><input class="form-check-input" type="radio" name="attendance[${st.id}]" value="excused" ${status==='excused'?'checked':''}> <span class="text-warning">İzinli</span></label></div><textarea class="form-control mt-2" name="notes[${st.id}]" placeholder="Not">${data.notes[st.id]||''}</textarea></div>`; }); html+=`<div class="text-end"><button class="btn btn-primary" type="button" onclick="saveAttendance()">Kaydet</button></div></form>`; body.innerHTML=html; }); attendanceModal.show(); }
-function saveAttendance(){ const form=new FormData(document.getElementById('attendanceForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); attendanceModal.hide(); } else showToast(res.message,'error'); }); }
-function openCourseDetail(id){ fetch('?detail='+id).then(r=>r.json()).then(d=>{ document.getElementById('courseDetailBody').innerHTML=`<div class="mb-2"><strong>${d.name}</strong></div><div><i class="fa fa-user"></i> ${d.teacher_name||''}</div><div><i class="fa fa-clock"></i> ${d.day}</div><div><i class="fa fa-location-dot"></i> ${d.building_name||''} / ${d.classroom_name||''}</div>`; courseDetailModal.show(); }); }
-function submitSettings(){ const form=document.getElementById('settingsForm'); fetch('',{method:'POST',body:new FormData(form)}).then(r=>r.json()).then(res=>{ if(res.status==='success') showToast(res.message); else showToast(res.message,'error'); }); }
-function exportExcel(){ const s=document.getElementById('rStart').value; const e=document.getElementById('rEnd').value; window.location='?export=excel&start='+s+'&end='+e; }
-const lf=document.getElementById('loginForm'); if(lf){ lf.addEventListener('submit',function(ev){ ev.preventDefault(); const fd=new FormData(lf); fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(res=>{ if(res.status==='success') window.location='?page=calendar'; else showToast(res.message,'error'); }); }); }
-function openBuildingModal(){ document.getElementById('buildingForm').reset(); new bootstrap.Modal(document.getElementById('buildingModal')).show(); }
-function saveBuilding(){ const form=new FormData(document.getElementById('buildingForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); location.reload(); } else showToast(res.message,'error'); }); }
-function openClassroomModal(){ document.getElementById('classroomForm').reset(); new bootstrap.Modal(document.getElementById('classroomModal')).show(); }
-function saveClassroom(){ const form=new FormData(document.getElementById('classroomForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); location.reload(); } else showToast(res.message,'error'); }); }
-function openTeacherModal(data=null){ document.getElementById('teacherForm').reset(); document.getElementById('teacher_id').value=''; if(data){ document.getElementById('teacher_id').value=data.id; document.getElementById('teacher_username').value=data.username; document.getElementById('teacher_full_name').value=data.full_name; document.getElementById('teacher_email').value=data.email; document.getElementById('teacher_phone').value=data.phone; } new bootstrap.Modal(document.getElementById('teacherModal')).show(); }
-function saveTeacher(){ const form=new FormData(document.getElementById('teacherForm')); fetch('',{method:'POST',body:form}).then(r=>r.json()).then(res=>{ if(res.status==='success'){ showToast(res.message); location.reload(); } else showToast(res.message,'error'); }); }
+const DAYS=['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Pazar'];
+const INITIAL_MOVABLE_HOLIDAYS=[
+{date:'2025-03-30',name:'Ramazan Bayramı 1. Gün'},{date:'2025-03-31',name:'Ramazan Bayramı 2. Gün'},
+{date:'2025-04-01',name:'Ramazan Bayramı 3. Gün'},{date:'2025-06-06',name:'Kurban Bayramı 1. Gün'},
+{date:'2025-06-07',name:'Kurban Bayramı 2. Gün'},{date:'2025-06-08',name:'Kurban Bayramı 3. Gün'},
+{date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
+];
+
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],holidays:[],buildings:[],classes:[],settings:{}};
+let currentUser=null;
+let currentViewDate=new Date();
+let viewMode = 'week'; 
+let currentBuildingFilter = localStorage.getItem('lastBuilding') || "";
+
+async function apiCall(action, payload = null) {
+    try {
+        const url = '?action=' + action;
+        const options = payload ? {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        } : undefined;
+        const res = await fetch(url, options);
+        if(!res.ok) throw new Error("Sunucu hatası");
+        return await res.json();
+    } catch(e) {
+        alert("Bir hata oluştu: " + e.message);
+        return null;
+    }
+}
+
+async function refreshData() {
+    const res = await apiCall('get_all_data');
+    if(res) {
+        data = res;
+        if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
+        if(currentUser) showApp(false); 
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const savedUser = localStorage.getItem('savedUser');
+    const savedPass = localStorage.getItem('savedPass');
+    if(savedUser && savedPass) {
+        document.getElementById('loginUser').value = savedUser;
+        document.getElementById('loginPass').value = atob(savedPass);
+        document.getElementById('rememberMe').checked = true;
+    }
+});
+
+async function apiLogin() {
+    const u = document.getElementById('loginUser').value;
+    const p = document.getElementById('loginPass').value;
+    const remember = document.getElementById('rememberMe').checked;
+
+    const res = await apiCall('login', {username:u, password:p});
+    if(res && res.status === 'success') {
+        currentUser = res.user;
+        
+        if(remember) {
+            localStorage.setItem('savedUser', u);
+            localStorage.setItem('savedPass', btoa(p));
+        } else {
+            localStorage.removeItem('savedUser');
+            localStorage.removeItem('savedPass');
+        }
+
+        await refreshData();
+        showApp(true);
+    } else {
+        alert(res ? res.message : 'Giriş başarısız');
+    }
+}
+
+function logout(){
+    currentUser=null;
+    document.getElementById('loginPage').classList.remove('hidden');
+    document.getElementById('mainApp').classList.add('hidden');
+}
+
+function showApp(firstTime){
+    document.getElementById('loginPage').classList.add('hidden');
+    document.getElementById('mainApp').classList.remove('hidden');
+    document.getElementById('currentUser').textContent=currentUser.name+' ('+currentUser.role+')';
+    renderNav();
+    if(firstTime || document.querySelector('.calendar')) showCalendar();
+}
+
+function renderNav(){
+    const isAdmin=currentUser.role==='admin';
+    let html=`<button class="active" onclick="showCalendar()">📅 Takvim</button>`;
+    if(isAdmin)html+=`<button onclick="showCourses()">📚 Kurslar</button><button onclick="showTeachers()">👨‍🏫 Öğretmenler</button>`;
+    html+=`<button onclick="showStudents()">👨‍🎓 Öğrenciler</button>`;
+    html+=`<button onclick="showReports()">📊 Raporlar</button>`;
+    if(isAdmin)html+=`<button onclick="showAdmin()">⚙️ Ayarlar</button>`;
+    document.getElementById('navBar').innerHTML=html;
+}
+function setActiveNav(idx){document.querySelectorAll('.nav button').forEach((b,i)=>b.classList.toggle('active',i===idx))}
+function formatDate(d){
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+function getContrastYIQ(hexcolor){
+    if(!hexcolor) return 'black';
+    hexcolor = hexcolor.replace("#", "");
+    var r = parseInt(hexcolor.substr(0,2),16);
+    var g = parseInt(hexcolor.substr(2,2),16);
+    var b = parseInt(hexcolor.substr(4,2),16);
+    var yiq = ((r*299)+(g*587)+(b*114))/1000;
+    return (yiq >= 128) ? 'black' : 'white';
+}
+function getHoliday(dateStr){
+    const [y, m, d] = dateStr.split('-').map(Number);
+    if(m===1&&d===1)return 'Yılbaşı';
+    if(m===4&&d===23)return '23 Nisan Ulusal Egemenlik ve Çocuk Bayramı';
+    if(m===5&&d===1)return '1 Mayıs Emek ve Dayanışma Günü';
+    if(m===5&&d===19)return '19 Mayıs Atatürk\'ü Anma, Gençlik ve Spor Bayramı';
+    if(m===7&&d===15)return '15 Temmuz Demokrasi ve Milli Birlik Günü';
+    if(m===8&&d===30)return '30 Ağustos Zafer Bayramı';
+    if(m===10&&d===29)return '29 Ekim Cumhuriyet Bayramı';
+    const custom = data.holidays.find(h=>h.date===dateStr);
+    if(custom) return custom.name;
+    return null;
+}
+
+// --- ŞİFRE DEĞİŞTİRME ---
+function openChangePasswordModal() {
+    let html=`<div class="modal-header"><h2>🔑 Şifre Değiştir</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Yeni Şifre</label><input type="password" id="newPass"></div>
+    <div class="form-group"><label>Yeni Şifre (Tekrar)</label><input type="password" id="newPass2"></div>
+    <button class="btn btn-primary" onclick="changePassword()">Değiştir</button>`;
+    showModal(html);
+}
+
+async function changePassword() {
+    const p1 = document.getElementById('newPass').value;
+    const p2 = document.getElementById('newPass2').value;
+    if(p1 !== p2) return alert("Şifreler uyuşmuyor!");
+    if(p1.length < 4) return alert("Şifre en az 4 karakter olmalı!");
+
+    await apiCall('change_password', {id: currentUser.id, role: currentUser.role, newPass: p1});
+    alert("Şifreniz başarıyla güncellendi.");
+    closeModal();
+}
+
+// --- TAKVİM ---
+function showCalendar(){
+    setActiveNav(0);
+    let dates=[];
+    let title="";
+
+    let customStart = document.getElementById('calStart')?.value;
+    let customEnd = document.getElementById('calEnd')?.value;
+
+    if(viewMode==='week'){
+        const day=currentViewDate.getDay(),diff=currentViewDate.getDate()-day+(day===0?-6:1);
+        const startOfWeek=new Date(currentViewDate); startOfWeek.setDate(diff);
+        dates = Array.from({length:7},(_,i)=>{const dt=new Date(startOfWeek);dt.setDate(startOfWeek.getDate()+i);return dt});
+        title = `${dates[0].toLocaleDateString('tr-TR')} - ${dates[6].toLocaleDateString('tr-TR')}`;
+    } else if(viewMode === 'month') {
+        const year=currentViewDate.getFullYear(), month=currentViewDate.getMonth();
+        const firstDay=new Date(year,month,1);
+        let startDayIndex = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1; 
+        let iterDate = new Date(firstDay);
+        iterDate.setDate(iterDate.getDate() - startDayIndex);
+        title = firstDay.toLocaleDateString('tr-TR',{month:'long', year:'numeric'});
+        for(let i=0; i<42; i++){dates.push(new Date(iterDate));iterDate.setDate(iterDate.getDate()+1);}
+    } else if (viewMode === 'custom' && customStart && customEnd) {
+        let d = new Date(customStart);
+        const e = new Date(customEnd);
+        while(d <= e) {
+            dates.push(new Date(d));
+            d.setDate(d.getDate() + 1);
+        }
+        title = `${new Date(customStart).toLocaleDateString('tr-TR')} - ${new Date(customEnd).toLocaleDateString('tr-TR')}`;
+    }
+
+    let html=`<div class="card">
+    <div class="filter-row" style="margin-bottom:10px; padding:10px; background:#e3f2fd; align-items:flex-end;">
+        <div class="form-group" style="margin:0;">
+            <label>Tesis Filtrele</label>
+            <select id="calFilterBuilding" onchange="applyCalendarFilter()">
+                <option value="">Tümü</option>
+                ${data.buildings.map(b=>`<option value="${b}" ${currentBuildingFilter===b?'selected':''}>${b}</option>`).join('')}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0;">
+            <label>Başlangıç</label>
+            <input type="date" id="calStart" value="${customStart||''}">
+        </div>
+        <div class="form-group" style="margin:0;">
+            <label>Bitiş</label>
+            <input type="date" id="calEnd" value="${customEnd||''}">
+        </div>
+        <div class="form-group" style="margin:0;">
+             <button class="btn btn-primary" onclick="applyCalendarFilter()">Uygula</button>
+        </div>
+    </div>
+
+    <div class="week-nav">
+        <div><button class="btn btn-primary" onclick="changeDate(-1)">◀ Önceki</button>
+        <button class="btn btn-primary" onclick="changeDate(1)">Sonraki ▶</button></div>
+        <h2 style="margin:0;border:none">${title}</h2>
+        <div class="view-toggle">
+            <button class="btn btn-outline ${viewMode==='week'?'active':''}" onclick="toggleView('week')">Hafta</button>
+            <button class="btn btn-outline ${viewMode==='month'?'active':''}" onclick="toggleView('month')">Ay</button>
+        </div>
+    </div>
+    
+    <div class="calendar ${viewMode==='month'?'month-view':''}"><div class="cal-header">Pazartesi</div><div class="cal-header">Salı</div><div class="cal-header">Çarşamba</div>
+    <div class="cal-header">Perşembe</div><div class="cal-header">Cuma</div><div class="cal-header">Cumartesi</div><div class="cal-header">Pazar</div>`;
+    
+    dates.forEach((dt,i)=>{
+        const ds=formatDate(dt),today=formatDate(new Date())===ds,holidayName=getHoliday(ds);
+        const isOtherMonth = viewMode==='month' && dt.getMonth() !== currentViewDate.getMonth();
+        let classes = "cal-cell";
+        if(today) classes += " today";
+        if(isOtherMonth) classes += " other-month";
+        if(holidayName) classes += " holiday"; else if(dt.getDay()===0 || dt.getDay()===6) classes += " weekend";
+        
+        const courses=getCoursesForDate(ds);
+        
+        html+=`<div class="${classes}" data-day="${DAYS[dt.getDay()===0?6:dt.getDay()-1]}" onclick="openDayModal('${ds}')">
+        <div class="cal-date"><span>${dt.getDate()} ${viewMode==='week'?dt.toLocaleDateString('tr-TR',{month:'short'}):''}</span>
+        ${holidayName ? '<span>🇹🇷</span>' : ''}</div>`;
+        if(holidayName)html+=`<span class="cal-holiday-label">${holidayName}</span>`;
+        courses.forEach(c=>{
+            const cancelled=c.cancelledDates&&c.cancelledDates.includes(ds);
+            const mod=c.modifications&&c.modifications[ds];
+            const bgColor = c.color || '#e3f2fd';
+            const txtColor = getContrastYIQ(bgColor);
+            html+=`<div class="course-tag${cancelled?' cancelled':''}" style="background-color:${bgColor};color:${txtColor}" 
+            onclick="event.stopPropagation();openCourseDetail('${c.id}','${ds}')">
+            ${c.name} <small>${mod?mod.time:c.time}</small></div>`;
+        });
+        html+=`</div>`;
+    });
+    html+=`</div></div>`;
+    document.getElementById('mainContent').innerHTML=html;
+}
+
+function applyCalendarFilter(){
+    currentBuildingFilter = document.getElementById('calFilterBuilding').value;
+    localStorage.setItem('lastBuilding', currentBuildingFilter); 
+
+    const s = document.getElementById('calStart').value;
+    const e = document.getElementById('calEnd').value;
+    if(s && e) {
+        viewMode = 'custom';
+    } else if (viewMode === 'custom') {
+        viewMode = 'week';
+    }
+    showCalendar();
+    document.getElementById('calStart').value = s;
+    document.getElementById('calEnd').value = e;
+}
+
+function toggleView(mode){viewMode=mode;showCalendar()}
+function changeDate(dir){if(viewMode==='week') currentViewDate.setDate(currentViewDate.getDate()+dir*7);else currentViewDate.setMonth(currentViewDate.getMonth()+dir);showCalendar()}
+
+function getCoursesForDate(ds){
+    const dt=new Date(ds),dayName=DAYS[dt.getDay()===0?6:dt.getDay()-1];
+    return data.courses.filter(c=>{
+        if(ds<c.startDate||ds>c.endDate) return false;
+        if(c.day!==dayName) return false;
+        if(currentBuildingFilter && c.building !== currentBuildingFilter) return false;
+        if(currentUser && currentUser.role === 'teacher' && c.teacherId != currentUser.id) return false;
+        return true;
+    });
+}
+
+function openDayModal(ds){
+    const isAdmin=currentUser.role==='admin',courses=getCoursesForDate(ds);
+    const holidayName=getHoliday(ds);
+    let html=`<div class="modal-header"><h2>📅 ${new Date(ds).toLocaleDateString('tr-TR',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</h2>
+    <span class="modal-close" onclick="closeModal()">×</span></div>`;
+    if(holidayName)html+=`<div class="conflict" style="background:#f8d7da;border-left-color:#dc3545">🎉 Resmi Tatil: ${holidayName}</div>`;
+    html+=`<h3 style="margin:15px 0">Bu Günün Kursları</h3>`;
+    if(courses.length===0)html+=`<p style="color:#888">Bu gün için kurs bulunmuyor.</p>`;
+    courses.forEach(c=>{
+        const cancelled=c.cancelledDates&&c.cancelledDates.includes(ds);
+        const mod=c.modifications&&c.modifications[ds];
+        html+=`<div class="card" style="margin:10px 0;${cancelled?'opacity:0.5':''}">
+        <strong style="color:${c.color||'#333'}">● ${c.name}</strong> ${cancelled?'(İPTAL)':''}<br>
+        <small>⏰ ${mod?mod.time:c.time} | 📍 ${mod?mod.classroom:c.classroom} | 🏢 ${mod?mod.building:c.building}</small><br>
+        <small>👨‍🏫 ${data.teachers.find(t=>t.id==c.teacherId)?.name||'Atanmamış'}</small><br>`;
+        if(isAdmin){
+            if(!cancelled){
+                html+=`<button class="btn btn-warning btn-sm" onclick="modifyCourse(${c.id},'${ds}')">Değiştir</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelCourse(${c.id},'${ds}')">İptal Et</button>`;
+            } else {
+                html+=`<button class="btn btn-success btn-sm" onclick="activateCourse(${c.id},'${ds}')">✅ Tekrar Aktif Et</button>`;
+            }
+        }
+        if(!cancelled){
+        html+=`<button class="btn btn-success btn-sm" onclick="openAttendance(${c.id},'${ds}')">Yoklama</button>`;
+        }
+        html+=`</div>`;
+    });
+    if(isAdmin){html+=`<hr style="margin:20px 0"><button class="btn btn-primary" onclick="openNewCourseModal('${ds}')">+ Bu Güne Kurs Ekle</button>`;}
+    showModal(html);
+}
+function openCourseDetail(cid,ds){openAttendance(cid,ds)}
+
+function openAttendance(cid,ds){
+    const course=data.courses.find(c=>c.id==cid);
+    if(!course)return;
+    const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
+    const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
+    let html=`<div class="modal-header"><h2>📋 Yoklama: ${course.name}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <p><strong>Tarih:</strong> ${new Date(ds).toLocaleDateString('tr-TR')}</p>
+    <div class="attendance-list" style="margin-top:15px">`;
+    if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
+    students.forEach(s=>{
+        const present=att.find(a=>a.studentId===s.id);
+        html+=`<div class="attendance-item"><span>${s.name} ${s.surname}</span>
+        <div class="attendance-actions">
+        <button class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'present')">✓</button>
+        <button class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'absent')">✗</button>
+        <button class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${ds}',${s.id},'excused')">M</button>
+        </div></div>`;
+    });
+    html+=`</div>`;
+    showModal(html);
+}
+async function markAttendance(cid,ds,sid,status){
+    await apiCall('save_attendance', {courseId:cid, date:ds, studentId:sid, status:status});
+    await refreshData();
+    openAttendance(cid,ds);
+}
+async function cancelCourse(cid,ds){
+    if(!confirm('Bu günün dersini iptal etmek istiyor musunuz?'))return;
+    const course=data.courses.find(c=>c.id==cid);
+    if(!course.cancelledDates)course.cancelledDates=[];
+    course.cancelledDates.push(ds);
+    await apiCall('save_course', course);
+    await refreshData();
+    closeModal();
+    showCalendar();
+}
+async function activateCourse(cid,ds){
+    if(!confirm('Bu dersi tekrar aktif etmek istiyor musunuz?')) return;
+    const course=data.courses.find(c=>c.id==cid);
+    if(course && course.cancelledDates){
+        course.cancelledDates = course.cancelledDates.filter(d => d !== ds);
+        await apiCall('save_course', course);
+        await refreshData();
+        closeModal();
+        showCalendar();
+    }
+}
+
+function modifyCourse(cid,ds){
+    const course=data.courses.find(c=>c.id==cid);
+    const mod=course.modifications&&course.modifications[ds]||{};
+    let html=`<div class="modal-header"><h2>✏️ Ders Değişikliği</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Yeni Saat</label><input type="text" id="modTime" value="${mod.time||course.time}" placeholder="15:00-17:00"></div>
+    <div class="form-group"><label>Yeni Tesis</label><select id="modBuilding">${data.buildings.map(b=>`<option ${(mod.building||course.building)===b?'selected':''}>${b}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Yeni Sınıf</label><select id="modClass">${data.classes.map(c=>`<option ${(mod.classroom||course.classroom)===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="form-group"><label><input type="checkbox" id="modRange"> Tarih Aralığına Uygula</label></div>
+    <div id="modRangeDates" class="hidden">
+    <div class="form-group"><label>Başlangıç</label><input type="date" id="modStart" value="${ds}"></div>
+    <div class="form-group"><label>Bitiş</label><input type="date" id="modEnd" value="${ds}"></div></div>
+    <button class="btn btn-primary" onclick="saveModification(${cid},'${ds}')">Kaydet</button>`;
+    showModal(html);
+    document.getElementById('modRange').onchange=function(){document.getElementById('modRangeDates').classList.toggle('hidden',!this.checked)};
+}
+async function saveModification(cid,ds){
+    const course=data.courses.find(c=>c.id==cid);
+    if(!course.modifications)course.modifications={};
+    const modData={time:document.getElementById('modTime').value,building:document.getElementById('modBuilding').value,classroom:document.getElementById('modClass').value};
+    if(document.getElementById('modRange').checked){
+        const start=document.getElementById('modStart').value,end=document.getElementById('modEnd').value;let d=new Date(start);
+        while(formatDate(d)<=end){if(DAYS[d.getDay()===0?6:d.getDay()-1]===course.day)course.modifications[formatDate(d)]=modData;d.setDate(d.getDate()+1);}
+    }else course.modifications[ds]=modData;
+    await apiCall('save_course', course);
+    await refreshData();
+    closeModal();
+    showCalendar();
+}
+
+function openNewCourseModal(ds){
+    let defaultBuilding = data.buildings[0];
+    if(currentBuildingFilter && currentBuildingFilter !== "") {
+        defaultBuilding = currentBuildingFilter;
+    }
+
+    const defaults = {name:'',day:'Pazartesi',time:'',building:defaultBuilding,classroom:data.classes[0],teacherId:'',start:'',end:'',color:'#e3f2fd'};
+    if(ds){const dt=new Date(ds);defaults.day=DAYS[dt.getDay()===0?6:dt.getDay()-1];defaults.start=ds;}
+    let html=`<div class="modal-header"><h2>➕ Yeni Kurs</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Kurs Adı</label><input type="text" id="cName"></div>
+    <div class="form-group"><label>Renk</label><input type="color" id="cColor" value="${defaults.color}"></div>
+    <div class="form-group"><label>Gün</label><select id="cDay">${DAYS.map(d=>`<option ${d===defaults.day?'selected':''}>${d}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Saat (Örn: 15:30-22:30)</label><input type="text" id="cTime" placeholder="15:30-22:30"></div>
+    <div class="form-group"><label>Tesis</label><select id="cBuilding">${data.buildings.map(b=>`<option ${b===defaults.building?'selected':''}>${b}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Sınıf/Atölye</label><select id="cClass">${data.classes.map(c=>`<option>${c}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Öğretmen</label><select id="cTeacher"><option value="">Seçiniz</option>${data.teachers.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Başlangıç Tarihi</label><input type="date" id="cStart" value="${defaults.start}"></div>
+    <div class="form-group"><label>Bitiş Tarihi</label><input type="date" id="cEnd"></div>
+    <button class="btn btn-primary" onclick="saveCourse()">Kaydet</button>`;
+    showModal(html);
+}
+async function saveCourse(){
+    const c={id:document.getElementById('cName').getAttribute('data-id') || 'new',
+        name:document.getElementById('cName').value,color:document.getElementById('cColor').value,
+        day:document.getElementById('cDay').value,time:document.getElementById('cTime').value,
+        building:document.getElementById('cBuilding').value,classroom:document.getElementById('cClass').value,
+        teacherId:document.getElementById('cTeacher').value,startDate:document.getElementById('cStart').value,
+        endDate:document.getElementById('cEnd').value,cancelledDates:[],modifications:{}};
+    await apiCall('save_course', c);
+    await refreshData();
+    closeModal();
+    showCalendar();
+}
+
+function showCourses(){
+    setActiveNav(1);
+    let html=`<div class="card"><h2>📚 Kurs Yönetimi</h2>
+    
+    <div class="filter-row" style="background:#e3f2fd; padding:10px; margin-bottom:15px; border-radius:5px;">
+        <div class="form-group" style="margin:0; flex:0 0 200px;">
+            <label>Tesis Filtrele</label>
+            <select id="courseFilterBuilding" onchange="filterCourses()">
+                <option value="">Tümü</option>
+                ${data.buildings.map(b=>`<option>${b}</option>`).join('')}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0; align-self:flex-end;">
+             <button class="btn btn-primary" onclick="openNewCourseModal()">+ Yeni Kurs</button>
+        </div>
+    </div>
+
+    <div class="table-responsive"><table id="courseTable" style="margin-top:15px">
+    <thead><tr><th>Kurs</th><th>Renk</th><th>Gün</th><th>Saat</th><th>Tesis</th><th>Sınıf</th><th>Öğretmen</th><th>İşlem</th></tr></thead>
+    <tbody>`;
+    data.courses.forEach(c=>{
+        const t=data.teachers.find(x=>x.id==c.teacherId);
+        html+=`<tr data-building="${c.building}"><td>${c.name}</td><td><span style="display:inline-block;width:20px;height:20px;background:${c.color||'#e3f2fd'};border:1px solid #ccc;border-radius:3px"></span></td>
+        <td>${c.day}</td><td>${c.time}</td><td>${c.building}</td><td>${c.classroom}</td><td>${t?.name||'-'}</td>
+        <td><button class="btn btn-warning" onclick="editCourse(${c.id})">✏️</button>
+        <button class="btn btn-danger" onclick="deleteCourse(${c.id})">🗑️</button></td></tr>`;
+    });
+    html+=`</tbody></table></div></div>`;
+    document.getElementById('mainContent').innerHTML=html;
+}
+
+function filterCourses(){
+    const val = document.getElementById('courseFilterBuilding').value;
+    const rows = document.querySelectorAll('#courseTable tbody tr');
+    rows.forEach(r => {
+        if(val === "" || r.getAttribute('data-building') === val) {
+            r.style.display = "";
+        } else {
+            r.style.display = "none";
+        }
+    });
+}
+
+function editCourse(id){
+    const c=data.courses.find(x=>x.id===id);
+    openNewCourseModal();
+    setTimeout(()=>{
+        document.getElementById('cName').value=c.name;document.getElementById('cName').setAttribute('data-id', c.id);
+        document.getElementById('cColor').value=c.color||'#e3f2fd';document.getElementById('cDay').value=c.day;
+        document.getElementById('cTime').value=c.time;document.getElementById('cBuilding').value=c.building;
+        document.getElementById('cClass').value=c.classroom;document.getElementById('cTeacher').value=c.teacherId;
+        document.getElementById('cStart').value=c.startDate;document.getElementById('cEnd').value=c.endDate;
+    }, 50);
+}
+async function deleteCourse(id){
+    if(confirm('Kursu silmek istiyor musunuz?')){
+        await apiCall('delete_course', {id});
+        await refreshData();
+        showCourses();
+    }
+}
+
+function showTeachers(){
+    setActiveNav(2);
+    let html=`<div class="card"><h2>👨‍🏫 Öğretmen Yönetimi</h2>
+    <div class="table-responsive"><button class="btn btn-primary" onclick="openTeacherModal()">+ Yeni Öğretmen</button>
+    <table style="margin-top:15px"><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Kullanıcı Adı</th><th>İşlem</th></tr>`;
+    data.teachers.forEach(t=>{
+        html+=`<tr><td>${t.name}</td><td>${t.phone||'-'}</td><td>${t.email||'-'}</td><td>${t.username}</td>
+        <td><button class="btn btn-warning" onclick="editTeacher(${t.id})">✏️</button>
+        <button class="btn btn-danger" onclick="deleteTeacher(${t.id})">🗑️</button></td></tr>`;
+    });
+    html+=`</table></div></div>`;
+    document.getElementById('mainContent').innerHTML=html;
+}
+function openTeacherModal(t){
+    let html=`<div class="modal-header"><h2>${t?'✏️ Düzenle':'➕ Yeni Öğretmen'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Ad Soyad</label><input type="text" id="tName" value="${t?.name||''}"></div>
+    <div class="form-group"><label>Telefon</label><input type="text" id="tPhone" value="${t?.phone||''}"></div>
+    <div class="form-group"><label>E-posta</label><input type="email" id="tEmail" value="${t?.email||''}"></div>
+    <div class="form-group"><label>Kullanıcı Adı</label><input type="text" id="tUser" value="${t?.username||''}"></div>
+    <div class="form-group"><label>Şifre</label><input type="password" id="tPass" value="${t?.password||''}"></div>
+    <button class="btn btn-primary" onclick="saveTeacher(${t?.id||0})">${t?'Güncelle':'Kaydet'}</button>`;
+    showModal(html);
+}
+function editTeacher(id){openTeacherModal(data.teachers.find(x=>x.id===id))}
+async function saveTeacher(id){
+    const t={id:id||'new',name:document.getElementById('tName').value,phone:document.getElementById('tPhone').value,
+    email:document.getElementById('tEmail').value,username:document.getElementById('tUser').value,password:document.getElementById('tPass').value};
+    await apiCall('save_teacher', t);
+    await refreshData();
+    closeModal();
+    showTeachers();
+}
+async function deleteTeacher(id){
+    if(confirm('Silmek istiyor musunuz?')){
+        await apiCall('delete_teacher', {id});
+        await refreshData();
+        showTeachers();
+    }
+}
+
+// --- ÖĞRENCİLER ---
+function showStudents(){
+    setActiveNav(currentUser.role==='admin'?3:4);
+    
+    // YENİ EKLENEN KISIM: Öğretmen Filtresi
+    const isTeacher = currentUser.role === 'teacher';
+    let availableCourses = data.courses;
+    
+    // Eğer öğretmense sadece kendi kurslarını filtreye koyacağız
+    if(isTeacher){
+        availableCourses = data.courses.filter(c => c.teacherId == currentUser.id);
+    }
+
+    let html=`<div class="card"><h2>👨‍🎓 Öğrenci Yönetimi</h2>
+    <button class="btn btn-primary" onclick="openStudentModal()">+ Yeni Öğrenci</button>
+    <div class="form-group" style="margin-top:15px"><label>Kurs Filtrele</label>
+    <select id="studentFilter" onchange="filterStudents()">
+        <option value="">Tümü</option>
+        ${availableCourses.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
+    </select></div>
+    <div class="table-responsive"><table style="margin-top:15px"><tr><th>Ad</th><th>Soyad</th><th>Veli</th><th>Telefon</th><th>Kurslar</th><th>İşlem</th></tr>`;
+    
+    data.students.forEach(s=>{
+        // EĞER ÖĞRETMENSE VE BU ÖĞRENCİ ÖĞRETMENİN HİÇBİR KURSUNA KAYITLI DEĞİLSE TABLOYA EKLEME
+        if(isTeacher) {
+            // Öğrencinin aldığı kurslardan en az biri öğretmenin kursları içinde var mı?
+            const hasTeacherCourse = s.courses && s.courses.some(cid => availableCourses.find(ac => ac.id == cid));
+            if(!hasTeacherCourse) return;
+        }
+
+        const courseNames = s.courses ? s.courses.map(cid => {const c = data.courses.find(x => x.id == cid); return c ? c.name : '';}).filter(n=>n).join(', ') : '';
+        const courseIds = s.courses ? s.courses.join(',') : '';
+        html+=`<tr data-courses="${courseIds}"><td>${s.name}</td><td>${s.surname}</td>
+        <td>${s.parent_name||'-'} (${s.parent_phone||'-'})</td>
+        <td>${s.phone||'-'}</td>
+        <td>${courseNames||'-'}</td>
+        <td><button class="btn btn-warning" onclick="editStudent(${s.id})">✏️</button>
+        <button class="btn btn-danger" onclick="deleteStudent(${s.id})">🗑️</button></td></tr>`;
+    });
+    html+=`</table></div></div>`;
+    document.getElementById('mainContent').innerHTML=html;
+}
+function filterStudents(){
+    const v=document.getElementById('studentFilter').value;
+    document.querySelectorAll('tr[data-courses]').forEach(r=>{
+        if(!v) r.style.display=''; else { const studentCourses = r.dataset.courses.split(','); r.style.display = studentCourses.includes(v) ? '' : 'none'; }
+    });
+}
+function openStudentModal(s){
+    let html=`<div class="modal-header"><h2>${s?'✏️ Düzenle':'➕ Yeni Öğrenci'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
+        <div class="form-group"><label>Ad</label><input type="text" id="sName" value="${s?.name||''}"></div>
+        <div class="form-group"><label>Soyad</label><input type="text" id="sSurname" value="${s?.surname||''}"></div>
+    </div>
+    <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
+        <div class="form-group"><label>TC Kimlik</label><input type="text" id="sTc" value="${s?.tc||''}"></div>
+        <div class="form-group"><label>Yaş</label><input type="number" id="sAge" value="${s?.age||''}"></div>
+    </div>
+    <div class="form-group"><label>Eğitim Durumu</label><input type="text" id="sEducation" value="${s?.education||''}"></div>
+    <div class="form-group"><label>Kendi Telefonu</label><input type="text" id="sPhone" value="${s?.phone||''}"></div>
+    <div class="form-group"><label>E-posta</label><input type="email" id="sEmail" value="${s?.email||''}"></div>
+    <hr>
+    <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
+        <div class="form-group"><label>Veli Adı</label><input type="text" id="sParentName" value="${s?.parent_name||''}"></div>
+        <div class="form-group"><label>Veli Telefonu</label><input type="text" id="sParentPhone" value="${s?.parent_phone||''}"></div>
+    </div>
+    <div class="form-group"><label>Kurslar</label><div class="checkbox-group">`;
+    data.courses.forEach(c => {
+        const isChecked = s && s.courses && s.courses.includes(c.id);
+        html += `<div class="checkbox-item"><input type="checkbox" name="courseSelect" value="${c.id}" ${isChecked ? 'checked' : ''}><span>${c.name}</span></div>`;
+    });
+    html+=`</div></div><button class="btn btn-primary" onclick="saveStudent(${s?.id||0})">${s?'Güncelle':'Kaydet'}</button>`;
+    showModal(html);
+}
+function editStudent(id){openStudentModal(data.students.find(x=>x.id===id))}
+async function saveStudent(id){
+    const selectedCourses = Array.from(document.querySelectorAll('input[name="courseSelect"]:checked')).map(cb => parseInt(cb.value));
+    const s={
+        id:id||'new',
+        name:document.getElementById('sName').value,
+        surname:document.getElementById('sSurname').value,
+        phone:document.getElementById('sPhone').value,
+        email:document.getElementById('sEmail').value,
+        tc:document.getElementById('sTc').value,
+        age:document.getElementById('sAge').value,
+        education:document.getElementById('sEducation').value,
+        parent_name:document.getElementById('sParentName').value,
+        parent_phone:document.getElementById('sParentPhone').value,
+        courses: selectedCourses
+    };
+    await apiCall('save_student', s);
+    await refreshData();
+    closeModal();
+    showStudents();
+}
+async function deleteStudent(id){
+    if(confirm('Silmek istiyor musunuz?')){
+        await apiCall('delete_student', {id});
+        await refreshData();
+        showStudents();
+    }
+}
+
+// --- RAPORLAR ---
+function showReports(){
+    setActiveNav(4);
+    const isTeacher = currentUser.role === 'teacher';
+    
+    // Öğretmen ise sadece kendi adını seçili getir, disabled yap
+    let teacherSelect = '';
+    // Kurs seçimi için sadece kendi kurslarını göster
+    let courseOptions = '<option value="">Tümü</option>';
+    let studentOptions = '<option value="">Tümü</option>';
+
+    let availableCourses = data.courses;
+    let availableStudents = data.students;
+
+    if(isTeacher) {
+        teacherSelect = `<select id="rTeacher" disabled><option value="${currentUser.id}">${currentUser.name}</option></select>`;
+        availableCourses = data.courses.filter(c => c.teacherId == currentUser.id);
+        
+        // Sadece bu kurslara kayıtlı öğrencileri bul
+        const teacherCourseIds = availableCourses.map(c => c.id);
+        availableStudents = data.students.filter(s => {
+            return s.courses && s.courses.some(cid => teacherCourseIds.includes(cid));
+        });
+
+    } else {
+        teacherSelect = `<select id="rTeacher"><option value="">Tümü</option>${data.teachers.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select>`;
+    }
+
+    courseOptions += availableCourses.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+    studentOptions += availableStudents.map(s=>`<option value="${s.id}">${s.name} ${s.surname}</option>`).join('');
+
+    let html=`<div class="card"><h2>📊 Raporlar</h2>
+    <div class="stats"><div class="stat-card"><h3>${data.courses.length}</h3><p>Toplam Kurs</p></div>
+    <div class="stat-card"><h3>${data.teachers.length}</h3><p>Öğretmen</p></div>
+    <div class="stat-card"><h3>${data.students.length}</h3><p>Öğrenci</p></div>
+    <div class="stat-card"><h3>${data.attendance.filter(a=>a.status==='absent').length}</h3><p>Devamsızlık</p></div>
+    <div class="stat-card"><h3>${data.attendance.filter(a=>a.status==='excused').length}</h3><p>Mazeretli</p></div></div>
+
+    <div class="filter-row">
+    <div class="form-group"><label>Kurs</label><select id="rCourse">${courseOptions}</select></div>
+    <div class="form-group"><label>Öğretmen</label>${teacherSelect}</div>
+    <div class="form-group"><label>Öğrenci</label><select id="rStudent">${studentOptions}</select></div>
+    <div class="form-group"><label>Durum</label><select id="rStatus"><option value="">Tümü</option><option value="present">Geldi</option><option value="absent">Gelmedi</option><option value="excused">Mazeretli</option></select></div>
+    <div class="form-group"><label>Başlangıç</label><input type="date" id="rStart"></div>
+    <div class="form-group"><label>Bitiş</label><input type="date" id="rEnd"></div>
+    <div class="form-group" style="align-self: flex-end;"><button class="btn btn-primary" style="width:100%" onclick="generateReport()">Rapor Oluştur</button></div></div>
+    <div id="reportResult"></div></div>`;
+    document.getElementById('mainContent').innerHTML=html;
+}
+function generateReport(){
+    const cid=document.getElementById('rCourse').value;
+    const sid=document.getElementById('rStudent').value, status=document.getElementById('rStatus').value,
+    start=document.getElementById('rStart').value, end=document.getElementById('rEnd').value;
+    
+    let tid = "";
+    if(currentUser.role === 'teacher') {
+        tid = currentUser.id;
+    } else {
+        tid = document.getElementById('rTeacher').value;
+    }
+
+    let filtered=data.attendance;
+    if(cid) filtered = filtered.filter(a => a.courseId == cid);
+    if(sid) filtered = filtered.filter(a => a.studentId == sid);
+    if(status) filtered = filtered.filter(a => a.status === status);
+    if(start) filtered = filtered.filter(a => a.date >= start);
+    if(end) filtered = filtered.filter(a => a.date <= end);
+    
+    if(tid) { 
+        const teacherCourseIds = data.courses.filter(c => c.teacherId == tid).map(c => c.id); 
+        filtered = filtered.filter(a => teacherCourseIds.includes(parseInt(a.courseId))); 
+    }
+
+    const absent=filtered.filter(a=>a.status==='absent'), excused=filtered.filter(a=>a.status==='excused');
+    let html=`<h3 style="margin:20px 0">Rapor Sonuçları</h3>
+    <p>Toplam Kayıt: ${filtered.length} | Devamsızlık: ${absent.length} | Mazeretli: ${excused.length}</p>
+    <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
+    filtered.forEach(a=>{
+        const s=data.students.find(x=>x.id===a.studentId), c=data.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
+        let statusText='?';
+        if(a.status==='present') statusText='<span style="color:green">✓ Geldi</span>';
+        else if(a.status==='absent') statusText='<span style="color:red">✗ Gelmedi</span>';
+        else if(a.status==='excused') statusText='<span style="color:#17a2b8">M Mazeretli</span>';
+        html+=`<tr><td>${s?.name} ${s?.surname}</td><td>${c?.name||'-'}</td><td>${t?.name||'-'}</td><td>${a.date}</td><td>${statusText}</td></tr>`;
+    });
+    html+=`</table></div>
+    <div class="export-buttons">
+    <button class="btn btn-success" onclick="downloadExcel()">📊 Excel</button>
+    <button class="btn btn-primary" onclick="downloadWord()">📄 Word</button>
+    <button class="btn btn-info" onclick="downloadHTML()">🌐 HTML</button>
+    <button class="btn btn-secondary" onclick="printReport()">🖨️ Yazdır</button>
+    </div>`;
+    document.getElementById('reportResult').innerHTML=html;
+}
+
+// --- YÖNETİM ---
+function showAdmin(){
+    setActiveNav(5);
+    let html=`<div class="card"><h2>⚙️ Yönetim Paneli</h2>
+    <div class="tabs"><button class="tab active" onclick="showAdminTab(0)">Kullanıcılar</button>
+    <button class="tab" onclick="showAdminTab(1)">Tesisler/Sınıflar</button>
+    <button class="tab" onclick="showAdminTab(2)">Ek Tatiller</button>
+    <button class="tab" onclick="showAdminTab(3)">Genel</button></div>
+    <div id="adminContent"></div></div>`;
+    document.getElementById('mainContent').innerHTML=html;
+    showAdminTab(0);
+}
+function showAdminTab(idx){
+    document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===idx));
+    let html='';
+    if(idx===0){
+        html=`<h3>Yönetici Kullanıcılar</h3><div class="table-responsive"><button class="btn btn-primary" onclick="addUser()">+ Yeni Yönetici</button>
+        <table style="margin-top:15px"><tr><th>Ad</th><th>Kullanıcı Adı</th><th>Rol</th><th>İşlem</th></tr>`;
+        data.users.forEach(u=>{html+=`<tr><td>${u.name}</td><td>${u.username}</td><td>${u.role}</td><td>${u.id!==1?`<button class="btn btn-danger" onclick="deleteUser(${u.id})">🗑️</button>`:''}</td></tr>`;});
+        html+=`</table></div>`;
+    }else if(idx===1){
+        html=`<h3>Tesisler</h3><div class="form-group"><input type="text" id="newBuilding" placeholder="Yeni tesis adı"><button class="btn btn-primary" onclick="addBuilding()">Ekle</button></div>
+        <ul>${data.buildings.map((b,i)=>`<li>${b} <button class="btn btn-danger btn-sm" onclick="removeBuilding(${i})">×</button></li>`).join('')}</ul>
+        <h3 style="margin-top:20px">Sınıflar/Atölyeler</h3><div class="form-group"><input type="text" id="newClass" placeholder="Yeni sınıf adı"><button class="btn btn-primary" onclick="addClass()">Ekle</button></div>
+        <ul>${data.classes.map((c,i)=>`<li>${c} <button class="btn btn-danger btn-sm" onclick="removeClass(${i})">×</button></li>`).join('')}</ul>`;
+    }else if(idx===2){
+        html=`<h3>Resmi Tatil Yönetimi</h3><div class="form-group"><input type="date" id="newHolDate"><input type="text" id="newHolName" placeholder="Tatil adı"><button class="btn btn-primary" onclick="addHoliday()">Ekle</button></div>
+        <div class="table-responsive"><table><tr><th>Tarih</th><th>Ad</th><th>İşlem</th></tr>`;
+        const sortedHolidays = [...data.holidays].sort((a,b)=>a.date.localeCompare(b.date));
+        sortedHolidays.forEach((h)=>{html+=`<tr><td>${h.date}</td><td>${h.name}</td><td><button class="btn btn-danger btn-sm" onclick="removeHoliday('${h.date}')">×</button></td></tr>`;});
+        html+=`</table></div>`;
+    }else{
+        html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${data.settings.title}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
+        <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-danger" onclick="resetData()">🗑️ Tüm Verileri Sil (DİKKAT!)</button>`;
+    }
+    document.getElementById('adminContent').innerHTML=html;
+}
+function addUser(){let html=`<div class="modal-header"><h2>➕ Yeni Yönetici</h2><span class="modal-close" onclick="closeModal()">×</span></div><div class="form-group"><label>Ad Soyad</label><input type="text" id="uName"></div><div class="form-group"><label>Kullanıcı Adı</label><input type="text" id="uUser"></div><div class="form-group"><label>Şifre</label><input type="password" id="uPass"></div><button class="btn btn-primary" onclick="saveUser()">Kaydet</button>`;showModal(html);}
+async function saveUser(){
+    await apiCall('save_user', {name:document.getElementById('uName').value,username:document.getElementById('uUser').value,password:document.getElementById('uPass').value});
+    await refreshData(); closeModal(); showAdmin();
+}
+async function deleteUser(id){if(confirm('Silmek istiyor musunuz?')){await apiCall('delete_user', {id}); await refreshData(); showAdmin();}}
+async function addBuilding(){const v=document.getElementById('newBuilding').value;if(v){const b=[...data.buildings,v];await apiCall('save_meta',{key:'buildings',value:b});await refreshData();showAdminTab(1)}}
+async function removeBuilding(i){const b=[...data.buildings];b.splice(i,1);await apiCall('save_meta',{key:'buildings',value:b});await refreshData();showAdminTab(1)}
+async function addClass(){const v=document.getElementById('newClass').value;if(v){const c=[...data.classes,v];await apiCall('save_meta',{key:'classes',value:c});await refreshData();showAdminTab(1)}}
+async function removeClass(i){const c=[...data.classes];c.splice(i,1);await apiCall('save_meta',{key:'classes',value:c});await refreshData();showAdminTab(1)}
+async function addHoliday(){await apiCall('add_holiday',{date:document.getElementById('newHolDate').value,name:document.getElementById('newHolName').value});await refreshData();showAdminTab(2)}
+async function removeHoliday(d){if(confirm('Silmek istiyor musunuz?')){await apiCall('delete_holiday',{date:d});await refreshData();showAdminTab(2)}}
+async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
+async function resetData(){if(confirm('TÜM VERİLER SİLİNECEK! Emin misiniz?')){await apiCall('reset_data');location.reload()}}
+
+// MODAL & EXPORT
+function showModal(html){document.getElementById('modalContent').innerHTML=html;document.getElementById('modal').style.display='block'}
+function closeModal(){document.getElementById('modal').style.display='none'}
+document.getElementById('modal').onclick=function(e){if(e.target===this)closeModal()};
+
+function downloadExcel() {
+    const table = document.getElementById('reportTable'); if(!table) return alert("Rapor yok!");
+    const html = `\uFEFF<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"></head><body>${table.outerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Rapor.xls'; a.click();
+}
+function downloadWord() {
+    const table = document.getElementById('reportTable'); if(!table) return alert("Rapor yok!");
+    const html = `\uFEFF<html><head><meta charset='utf-8'></head><body>${table.outerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/msword' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Rapor.doc'; a.click();
+}
+function downloadHTML() {
+    const table = document.getElementById('reportTable'); if(!table) return alert("Rapor yok!");
+    const html = `<html><head><meta charset="UTF-8"><style>table{width:100%;border-collapse:collapse;}th,td{border:1px solid black;padding:8px;}th{background:#f2f2f2}</style></head><body><h2>Rapor</h2>${table.outerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Rapor.html'; a.click();
+}
+function printReport(){window.print()}
 </script>
 </body>
 </html>
