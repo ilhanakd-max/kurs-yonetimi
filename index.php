@@ -728,17 +728,51 @@ function openStudentInfo(sid){
         const c = data.courses.find(x => x.id == cid);
         return c ? c.name : '';
     }).filter(Boolean).join(', ') : '';
+    const birthDate = s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : null;
+    const age = calculateStudentAge(s.date_of_birth);
+    const ageInfo = age !== null ? `Doğum Tarihi: ${birthDate}<br>Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
     let html=`<div class="modal-header"><h2>👨‍🎓 Öğrenci Bilgileri</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div id="studentInfoPanel">
+    <div class="tabs" id="studentInfoTabs">
+        <button class="tab active" onclick="showStudentInfoTab(0)">Genel Bilgiler</button>
+        <button class="tab" onclick="showStudentInfoTab(1)">Yaş Bilgisi</button>
+    </div>
+    <div class="tab-content active" data-student-tab-content>
     <div class="form-group"><label>Ad Soyad</label><div>${s.name} ${s.surname}</div></div>
     <div class="form-group"><label>TC Kimlik</label><div>${s.tc||'-'}</div></div>
-    <div class="form-group"><label>Doğum Tarihi</label><div>${s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : '-'}</div></div>
+    <div class="form-group"><label>Doğum Tarihi</label><div>${birthDate || '-'}</div></div>
     <div class="form-group"><label>Eğitim Durumu</label><div>${s.education||'-'}</div></div>
     <div class="form-group"><label>Kendi Telefonu</label><div>${s.phone||'-'}</div></div>
     <div class="form-group"><label>E-posta</label><div>${s.email||'-'}</div></div>
     <div class="form-group"><label>Veli Adı</label><div>${s.parent_name||'-'}</div></div>
     <div class="form-group"><label>Veli Telefonu</label><div>${s.parent_phone||'-'}</div></div>
-    <div class="form-group"><label>Kurslar</label><div>${courseNames||'-'}</div></div>`;
+    <div class="form-group"><label>Kurslar</label><div>${courseNames||'-'}</div></div>
+    </div>
+    <div class="tab-content" data-student-tab-content>
+        <div class="form-group"><label>Yaş Bilgisi</label><div>${ageInfo}</div></div>
+    </div>
+    </div>`;
     showModal(html);
+}
+function showStudentInfoTab(idx){
+    const panel = document.getElementById('studentInfoPanel');
+    if(!panel) return;
+    const tabs = panel.querySelectorAll('#studentInfoTabs .tab');
+    const contents = panel.querySelectorAll('[data-student-tab-content]');
+    tabs.forEach((t,i)=>t.classList.toggle('active',i===idx));
+    contents.forEach((c,i)=>c.classList.toggle('active',i===idx));
+}
+function calculateStudentAge(dateString){
+    if(!dateString) return null;
+    const birthDate = new Date(dateString);
+    if(Number.isNaN(birthDate.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        age -= 1;
+    }
+    return age;
 }
 async function markAttendance(cid,ds,sid,status){
     await apiCall('save_attendance', {courseId:cid, date:ds, studentId:sid, status:status});
