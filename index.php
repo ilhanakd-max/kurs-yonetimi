@@ -552,22 +552,6 @@ if (isset($_GET['action'])) {
         echo json_encode(['status'=>'success']); exit;
     }
     
-    if ($action === 'reset_data') {
-        if ($method !== 'POST') {
-            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
-        }
-        require_admin($user);
-        $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-        $pdo->exec("TRUNCATE TABLE attendance");
-        $pdo->exec("TRUNCATE TABLE student_courses");
-        $pdo->exec("TRUNCATE TABLE students");
-        $pdo->exec("TRUNCATE TABLE courses");
-        $pdo->exec("TRUNCATE TABLE teachers");
-        $pdo->exec("TRUNCATE TABLE holidays");
-        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
-        echo json_encode(['status'=>'success']); exit;
-    }
-
     json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
 }
 ?>
@@ -1502,8 +1486,7 @@ function showAdminTab(idx){
         html+=`</table></div>`;
     }else{
         html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
-        <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-danger" onclick="resetData()">🗑️ Tüm Verileri Sil (DİKKAT!)</button>
-        <button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
+        <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
     }
     document.getElementById('adminContent').innerHTML=html;
 }
@@ -1520,7 +1503,6 @@ async function removeClass(i){const c=[...data.classes];c.splice(i,1);await apiC
 async function addHoliday(){await apiCall('add_holiday',{date:document.getElementById('newHolDate').value,name:document.getElementById('newHolName').value});await refreshData();showAdminTab(2)}
 async function removeHoliday(d){if(confirm('Silmek istiyor musunuz?')){await apiCall('delete_holiday',{date:d});await refreshData();showAdminTab(2)}}
 async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
-async function resetData(){if(confirm('TÜM VERİLER SİLİNECEK! Emin misiniz?')){await apiCall('reset_data');location.reload()}}
 function downloadDatabaseBackup(){window.location.href='?action=download_backup&token='+encodeURIComponent(CSRF_TOKEN);}
 
 // MODAL & EXPORT
