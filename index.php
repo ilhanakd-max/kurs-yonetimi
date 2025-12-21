@@ -162,12 +162,12 @@ if (isset($_GET['action'])) {
         $s = $data;
         $sid = $s['id'];
         if ($sid && $sid > 0 && !str_starts_with($sid, 'new')) {
-            $sql = "UPDATE students SET name=?, surname=?, phone=?, email=?, tc=?, age=?, education=?, parent_name=?, parent_phone=? WHERE id=?";
-            $pdo->prepare($sql)->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['age'], $s['education'], $s['parent_name'], $s['parent_phone'], $sid]);
+            $sql = "UPDATE students SET name=?, surname=?, phone=?, email=?, tc=?, date_of_birth=?, education=?, parent_name=?, parent_phone=? WHERE id=?";
+            $pdo->prepare($sql)->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['date_of_birth'], $s['education'], $s['parent_name'], $s['parent_phone'], $sid]);
         } else {
-            $sql = "INSERT INTO students (name, surname, phone, email, tc, age, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
+            $sql = "INSERT INTO students (name, surname, phone, email, tc, date_of_birth, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['age'], $s['education'], $s['parent_name'], $s['parent_phone']]);
+            $stmt->execute([$s['name'], $s['surname'], $s['phone'], $s['email'], $s['tc'], $s['date_of_birth'], $s['education'], $s['parent_name'], $s['parent_phone']]);
             $sid = $pdo->lastInsertId();
         }
 
@@ -969,7 +969,7 @@ function openStudentModal(s){
     </div>
     <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
         <div class="form-group"><label>TC Kimlik</label><input type="text" id="sTc" value="${s?.tc||''}"></div>
-        <div class="form-group"><label>Yaş</label><input type="number" id="sAge" value="${s?.age||''}"></div>
+        <div class="form-group"><label>Doğum Tarihi</label><input type="date" id="sDob" value="${s?.date_of_birth||''}"></div>
     </div>
     <div class="form-group"><label>Eğitim Durumu</label><input type="text" id="sEducation" value="${s?.education||''}"></div>
     <div class="form-group"><label>Kendi Telefonu</label><input type="text" id="sPhone" value="${s?.phone||''}"></div>
@@ -997,7 +997,7 @@ async function saveStudent(id){
         phone:document.getElementById('sPhone').value,
         email:document.getElementById('sEmail').value,
         tc:document.getElementById('sTc').value,
-        age:document.getElementById('sAge').value,
+        date_of_birth:document.getElementById('sDob').value,
         education:document.getElementById('sEducation').value,
         parent_name:document.getElementById('sParentName').value,
         parent_phone:document.getElementById('sParentPhone').value,
