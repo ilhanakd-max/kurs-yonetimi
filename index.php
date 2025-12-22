@@ -1248,6 +1248,21 @@ function openNewCourseModal(ds, isEdit=false){
     <button class="btn btn-primary" onclick="saveCourse()">Kaydet</button>`;
     showModal(html);
 }
+function openCopyCourseModal(courseId){
+    const course = data.courses.find(c => c.id == courseId);
+    if(!course) return;
+    const dayCheckboxes = DAYS.map(d => {
+        const isChecked = d !== course.day;
+        return `<label style="margin-right:10px;display:inline-flex;align-items:center;gap:6px;">
+            <input type="checkbox" name="copyDay" value="${escapeAttr(d)}" ${isChecked ? 'checked' : ''}> ${escapeHtml(d)}
+        </label>`;
+    }).join('');
+    let html=`<div class="modal-header"><h2>📋 Kurs Kopyala</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Kaynak Kurs</label><div>${escapeHtml(course.name)} (${escapeHtml(course.day)} ${escapeHtml(course.time || '')})</div></div>
+    <div class="form-group"><label>Hedef Günler</label><div>${dayCheckboxes}</div></div>
+    <button class="btn btn-primary" onclick="copyCourseDays(${course.id})">Kopyala</button>`;
+    showModal(html);
+}
 function applyCourseTemplate(){
     const templateId = document.getElementById('cTemplate')?.value;
     if(!templateId) return;
@@ -1280,6 +1295,38 @@ async function saveCourse(){
     closeModal();
     showCalendar();
 }
+async function copyCourseDays(courseId){
+    const course = data.courses.find(c => c.id == courseId);
+    if(!course) return;
+    const selectedDays = Array.from(document.querySelectorAll('input[name="copyDay"]:checked')).map(cb => cb.value);
+    if(selectedDays.length === 0){
+        alert('Lütfen en az bir gün seçiniz.');
+        return;
+    }
+    const startDate = course.startDate ?? course.start_date ?? '';
+    const endDate = course.endDate ?? course.end_date ?? '';
+    for (const day of selectedDays) {
+        const newCourse = {
+            id: 'new',
+            name: course.name || '',
+            color: course.color || '#e3f2fd',
+            day,
+            time: course.time || '',
+            building: course.building || '',
+            classroom: course.classroom || '',
+            teacherId: course.teacherId || '',
+            startDate,
+            endDate,
+            cancelledDates: [],
+            modifications: {},
+            baseCourseId: course.id
+        };
+        await apiCall('save_course', newCourse);
+    }
+    await refreshData();
+    closeModal();
+    showCourses();
+}
 
 function showCourses(){
     setActiveNav(1);
@@ -1306,6 +1353,7 @@ function showCourses(){
         html+=`<tr data-building="${escapeAttr(c.building)}"><td>${escapeHtml(c.name)}</td><td><span style="display:inline-block;width:20px;height:20px;background:${sanitizeColor(c.color)};border:1px solid #ccc;border-radius:3px"></span></td>
         <td>${escapeHtml(c.day)}</td><td>${escapeHtml(c.time)}</td><td>${escapeHtml(c.building)}</td><td>${escapeHtml(c.classroom)}</td><td>${escapeHtml(t?.name||'-')}</td>
         <td><button class="btn btn-warning" onclick="editCourse(${c.id})">✏️</button>
+        <button class="btn btn-primary" onclick="openCopyCourseModal(${c.id})">📋</button>
         <button class="btn btn-danger" onclick="deleteCourse(${c.id})">🗑️</button></td></tr>`;
     });
     html+=`</tbody></table></div></div>`;
