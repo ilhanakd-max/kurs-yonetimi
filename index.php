@@ -53,6 +53,124 @@ function clean_password($value, $maxLength = 255) {
     return $value;
 }
 
+const ATTENDANCE_STATUS_PRESENT = 1;
+const ATTENDANCE_STATUS_ABSENT = 2;
+const ATTENDANCE_STATUS_EXCUSED = 3;
+
+function normalize_attendance_status($value): ?int {
+    if (is_int($value)) {
+        return in_array($value, [ATTENDANCE_STATUS_PRESENT, ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED], true)
+            ? $value
+            : null;
+    }
+    if (is_numeric($value)) {
+        $intVal = (int)$value;
+        return in_array($intVal, [ATTENDANCE_STATUS_PRESENT, ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED], true)
+            ? $intVal
+            : null;
+    }
+    if (!is_string($value)) {
+        return null;
+    }
+    $value = strtolower(trim($value));
+    return match ($value) {
+        'present' => ATTENDANCE_STATUS_PRESENT,
+        'absent' => ATTENDANCE_STATUS_ABSENT,
+        'excused' => ATTENDANCE_STATUS_EXCUSED,
+        default => null
+    };
+}
+
+function migrate_attendance_statuses(PDO $pdo, int $periodId): void {
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND status IN ('present','absent','excused')");
+    $stmt->execute([$periodId]);
+    if ((int)$stmt->fetchColumn() === 0) {
+        return;
+    }
+    $pdo->prepare("UPDATE attendance SET status = CASE status WHEN 'present' THEN ? WHEN 'absent' THEN ? WHEN 'excused' THEN ? ELSE status END WHERE period_id=?")
+        ->execute([ATTENDANCE_STATUS_PRESENT, ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
+}
+
+function parse_time_range_minutes(?string $timeRange): ?array {
+    if (!$timeRange) {
+        return null;
+    }
+    if (!preg_match('/^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$/', $timeRange, $matches)) {
+        return null;
+    }
+    $startHour = (int)$matches[1];
+    $startMinute = (int)$matches[2];
+    $endHour = (int)$matches[3];
+    $endMinute = (int)$matches[4];
+    if ($startHour > 23 || $endHour > 23 || $startMinute > 59 || $endMinute > 59) {
+        return null;
+    }
+    $startTotal = $startHour * 60 + $startMinute;
+    $endTotal = $endHour * 60 + $endMinute;
+    if ($endTotal <= $startTotal) {
+        return null;
+    }
+    return [$startTotal, $endTotal];
+}
+
+function ranges_overlap(?string $startA, ?string $endA, ?string $startB, ?string $endB): bool {
+    if (!$startA || !$endA || !$startB || !$endB) {
+        return true;
+    }
+    return $startA <= $endB && $endA >= $startB;
+}
+
+function check_course_conflicts(PDO $pdo, int $periodId, ?int $courseId, string $day, string $time, string $building, string $classroom, ?int $teacherId, ?string $startDate, ?string $endDate): array {
+    $messages = [];
+    $timeRange = parse_time_range_minutes($time);
+    if (!$day || !$timeRange) {
+        return $messages;
+    }
+    $clauses = [];
+    $params = [$periodId, $day, $courseId ?: 0];
+    if ($classroom) {
+        $clauses[] = "(classroom=? AND building=?)";
+        $params[] = $classroom;
+        $params[] = $building;
+    }
+    if ($teacherId) {
+        $clauses[] = "teacher_id=?";
+        $params[] = $teacherId;
+    }
+    if (!$clauses) {
+        return $messages;
+    }
+    $sql = "SELECT id, name, time, classroom, building, teacher_id, start_date, end_date FROM courses WHERE period_id=? AND day=? AND id<>? AND (" . implode(' OR ', $clauses) . ")";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $classroomConflict = false;
+    $teacherConflict = false;
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        if (!ranges_overlap($startDate, $endDate, $row['start_date'] ?? null, $row['end_date'] ?? null)) {
+            continue;
+        }
+        $existingRange = parse_time_range_minutes($row['time'] ?? '');
+        if (!$existingRange) {
+            continue;
+        }
+        if ($timeRange[0] < $existingRange[1] && $timeRange[1] > $existingRange[0]) {
+            if ($classroom && $row['classroom'] === $classroom && $row['building'] === $building) {
+                $classroomConflict = true;
+            }
+            if ($teacherId && (int)$row['teacher_id'] === $teacherId) {
+                $teacherConflict = true;
+            }
+        }
+    }
+    if ($classroomConflict) {
+        $messages[] = 'Seçilen sınıf için bu gün ve saat aralığında başka bir kurs bulunmaktadır.';
+    }
+    if ($teacherConflict) {
+        $messages[] = 'Seçilen öğretmenin bu gün ve saat aralığında başka bir dersi bulunmaktadır.';
+    }
+    return $messages;
+}
+
 function json_response($payload, $statusCode = 200) {
     http_response_code($statusCode);
     echo json_encode($payload);
@@ -263,6 +381,7 @@ if (isset($_GET['action'])) {
     $activePeriodId = (int)($activePeriod['id'] ?? 0);
     if ($activePeriodId > 0) {
         ensure_period_defaults($pdo, $activePeriodId, $createdDefaultPeriod);
+        migrate_attendance_statuses($pdo, $activePeriodId);
     }
 
     if ($action === 'change_password') {
@@ -290,6 +409,17 @@ if (isset($_GET['action'])) {
     if ($action === 'get_all_data') {
         if ($method !== 'GET') {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $rangeStart = clean_date($_GET['start'] ?? null);
+        $rangeEnd = clean_date($_GET['end'] ?? null);
+        if ($rangeStart && $rangeEnd && $rangeStart > $rangeEnd) {
+            $rangeStart = null;
+            $rangeEnd = null;
+        }
+        if (!$rangeStart || !$rangeEnd) {
+            $today = new DateTimeImmutable('now');
+            $rangeStart = $today->modify('monday this week')->format('Y-m-d');
+            $rangeEnd = $today->modify('sunday this week')->format('Y-m-d');
         }
         $response = [];
         $stmt = $pdo->query("SELECT id, name, username, role FROM users");
@@ -323,14 +453,19 @@ if (isset($_GET['action'])) {
         }
         $response['students'] = $students;
 
-        $stmt = $pdo->prepare("SELECT * FROM attendance WHERE period_id=?");
-        $stmt->execute([$activePeriodId]);
+        $stmt = $pdo->prepare("SELECT course_id, student_id, date, status FROM attendance WHERE period_id=? AND date BETWEEN ? AND ?");
+        $stmt->execute([$activePeriodId, $rangeStart, $rangeEnd]);
         $att = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $cleanAtt = [];
         foreach($att as $a) {
-            $cleanAtt[] = ['courseId' => $a['course_id'], 'studentId' => $a['student_id'], 'date' => $a['date'], 'status' => $a['status']];
+            $normalizedStatus = normalize_attendance_status($a['status']);
+            if ($normalizedStatus === null) {
+                continue;
+            }
+            $cleanAtt[] = ['courseId' => (int)$a['course_id'], 'studentId' => (int)$a['student_id'], 'date' => $a['date'], 'status' => $normalizedStatus];
         }
         $response['attendance'] = $cleanAtt;
+        $response['attendanceRange'] = ['start' => $rangeStart, 'end' => $rangeEnd];
 
         $stmt = $pdo->query("SELECT date, name FROM holidays");
         $response['holidays'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -360,6 +495,30 @@ if (isset($_GET['action'])) {
         exit;
     }
 
+    if ($action === 'get_attendance_range') {
+        if ($method !== 'GET') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $rangeStart = clean_date($_GET['start'] ?? null);
+        $rangeEnd = clean_date($_GET['end'] ?? null);
+        if (!$rangeStart || !$rangeEnd || $rangeStart > $rangeEnd) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz tarih aralığı'], 400);
+        }
+        $stmt = $pdo->prepare("SELECT course_id, student_id, date, status FROM attendance WHERE period_id=? AND date BETWEEN ? AND ?");
+        $stmt->execute([$activePeriodId, $rangeStart, $rangeEnd]);
+        $att = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $cleanAtt = [];
+        foreach ($att as $a) {
+            $normalizedStatus = normalize_attendance_status($a['status']);
+            if ($normalizedStatus === null) {
+                continue;
+            }
+            $cleanAtt[] = ['courseId' => (int)$a['course_id'], 'studentId' => (int)$a['student_id'], 'date' => $a['date'], 'status' => $normalizedStatus];
+        }
+        echo json_encode(['status' => 'success', 'attendance' => $cleanAtt, 'attendanceRange' => ['start' => $rangeStart, 'end' => $rangeEnd]]);
+        exit;
+    }
+
     // KAYDETME İŞLEMLERİ
     if ($action === 'save_course') {
         if ($method !== 'POST') {
@@ -372,19 +531,32 @@ if (isset($_GET['action'])) {
         $courseId = $c['id'] ?? null;
         $courseIdStr = is_string($courseId) ? $courseId : '';
         $courseIdInt = clean_int($courseId);
+        $name = clean_string($c['name'] ?? '', 150);
+        $color = clean_string($c['color'] ?? '', 20);
+        $day = clean_string($c['day'] ?? '', 20);
+        $time = clean_string($c['time'] ?? '', 20);
+        $building = clean_string($c['building'] ?? '', 150);
+        $classroom = clean_string($c['classroom'] ?? '', 150);
+        $teacherId = clean_int($c['teacherId'] ?? null);
+        $startDate = clean_date($c['startDate'] ?? null);
+        $endDate = clean_date($c['endDate'] ?? null);
+        $conflicts = check_course_conflicts($pdo, $activePeriodId, $courseIdInt, $day, $time, $building, $classroom, $teacherId, $startDate, $endDate);
+        if ($conflicts) {
+            json_response(['status' => 'error', 'message' => implode(' ', $conflicts)], 400);
+        }
         
         if ($courseIdInt && $courseIdInt > 0 && !str_starts_with($courseIdStr, 'new')) {
             $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=? WHERE id=? AND period_id=?";
             $pdo->prepare($sql)->execute([
-                clean_string($c['name'] ?? '', 150),
-                clean_string($c['color'] ?? '', 20),
-                clean_string($c['day'] ?? '', 20),
-                clean_string($c['time'] ?? '', 20),
-                clean_string($c['building'] ?? '', 150),
-                clean_string($c['classroom'] ?? '', 150),
-                clean_int($c['teacherId'] ?? null),
-                clean_date($c['startDate'] ?? null),
-                clean_date($c['endDate'] ?? null),
+                $name,
+                $color,
+                $day,
+                $time,
+                $building,
+                $classroom,
+                $teacherId,
+                $startDate,
+                $endDate,
                 $cancelled,
                 $mods,
                 $courseIdInt,
@@ -396,15 +568,15 @@ if (isset($_GET['action'])) {
                 $pdo->beginTransaction();
                 $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications, period_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
                 $pdo->prepare($sql)->execute([
-                    clean_string($c['name'] ?? '', 150),
-                    clean_string($c['color'] ?? '', 20),
-                    clean_string($c['day'] ?? '', 20),
-                    clean_string($c['time'] ?? '', 20),
-                    clean_string($c['building'] ?? '', 150),
-                    clean_string($c['classroom'] ?? '', 150),
-                    clean_int($c['teacherId'] ?? null),
-                    clean_date($c['startDate'] ?? null),
-                    clean_date($c['endDate'] ?? null),
+                    $name,
+                    $color,
+                    $day,
+                    $time,
+                    $building,
+                    $classroom,
+                    $teacherId,
+                    $startDate,
+                    $endDate,
                     $cancelled,
                     $mods,
                     $activePeriodId
@@ -680,6 +852,7 @@ if (isset($_GET['action'])) {
         if (!$periodId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
+        migrate_attendance_statuses($pdo, $periodId);
         $stmt = $pdo->prepare("SELECT * FROM courses WHERE period_id=?");
         $stmt->execute([$periodId]);
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -697,12 +870,16 @@ if (isset($_GET['action'])) {
             $stmt2->execute([$s['id'], $periodId]);
             $s['courses'] = $stmt2->fetchAll(PDO::FETCH_COLUMN);
         }
-        $stmt = $pdo->prepare("SELECT * FROM attendance WHERE period_id=?");
+        $stmt = $pdo->prepare("SELECT course_id, student_id, date, status FROM attendance WHERE period_id=?");
         $stmt->execute([$periodId]);
         $att = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $cleanAtt = [];
         foreach($att as $a) {
-            $cleanAtt[] = ['courseId' => $a['course_id'], 'studentId' => $a['student_id'], 'date' => $a['date'], 'status' => $a['status']];
+            $normalizedStatus = normalize_attendance_status($a['status']);
+            if ($normalizedStatus === null) {
+                continue;
+            }
+            $cleanAtt[] = ['courseId' => (int)$a['course_id'], 'studentId' => (int)$a['student_id'], 'date' => $a['date'], 'status' => $normalizedStatus];
         }
         echo json_encode(['status' => 'success', 'courses' => $courses, 'students' => $students, 'attendance' => $cleanAtt]);
         exit;
@@ -755,8 +932,8 @@ if (isset($_GET['action'])) {
         $courseId = clean_int($a['courseId'] ?? null);
         $studentId = clean_int($a['studentId'] ?? null);
         $date = clean_date($a['date'] ?? null);
-        $status = clean_string($a['status'] ?? '', 20);
-        if (!$courseId || !$studentId || !$date || !in_array($status, ['present', 'absent', 'excused'], true)) {
+        $status = normalize_attendance_status($a['status'] ?? null);
+        if (!$courseId || !$studentId || !$date || $status === null) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
@@ -1113,6 +1290,14 @@ const CSRF_TOKEN = <?php echo json_encode($_SESSION['csrf_token']); ?>;
 const SERVER_NOW = <?php echo json_encode(date('c')); ?>;
 const SERVER_TIME_OFFSET = new Date(SERVER_NOW).getTime() - Date.now();
 const DAYS=['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Pazar'];
+const ATT_STATUS_PRESENT = 1;
+const ATT_STATUS_ABSENT = 2;
+const ATT_STATUS_EXCUSED = 3;
+const ATT_STATUS_LABELS = {
+    [ATT_STATUS_PRESENT]: 'Geldi',
+    [ATT_STATUS_ABSENT]: 'Gelmedi',
+    [ATT_STATUS_EXCUSED]: 'Mazeretli'
+};
 const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-03-30',name:'Ramazan Bayramı 1. Gün'},{date:'2025-03-31',name:'Ramazan Bayramı 2. Gün'},
 {date:'2025-04-01',name:'Ramazan Bayramı 3. Gün'},{date:'2025-06-06',name:'Kurban Bayramı 1. Gün'},
@@ -1120,13 +1305,14 @@ const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
 ];
 
-let data={users:[],teachers:[],courses:[],students:[],attendance:[],holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null};
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null};
 let reportData=null;
 let reportPeriodId=null;
 let currentUser=null;
 let currentViewDate=new Date();
 let viewMode = 'week'; 
 let currentBuildingFilter = localStorage.getItem('lastBuilding') || "";
+let currentCustomRange = {start: '', end: ''};
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -1169,9 +1355,18 @@ function formatAnnouncementMessage(message) {
     return escapeHtml(message).replace(/\n/g, '<br>');
 }
 
-async function apiCall(action, payload = null) {
+async function apiCall(action, payload = null, queryParams = null) {
     try {
-        const url = '?action=' + action;
+        let url = '?action=' + action;
+        if (!payload && queryParams) {
+            const query = Object.entries(queryParams)
+                .filter(([, value]) => value !== null && value !== undefined && value !== '')
+                .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+                .join('&');
+            if (query) {
+                url += '&' + query;
+            }
+        }
         const options = payload ? {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -1187,9 +1382,14 @@ async function apiCall(action, payload = null) {
 }
 
 async function refreshData(options = {}) {
-    const res = await apiCall('get_all_data');
+    const range = getVisibleDateRange();
+    const res = await apiCall('get_all_data', null, range);
     if(res) {
         data = res;
+        if (data.attendance && Array.isArray(data.attendance)) {
+            data.attendance = data.attendance.map(a => ({...a, status: Number(a.status)}));
+        }
+        data.attendanceRange = res.attendanceRange || range;
         reportData = null;
         reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
@@ -1263,6 +1463,48 @@ function formatDate(d){
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+}
+
+function getVisibleDateRange() {
+    if (viewMode === 'custom' && currentCustomRange.start && currentCustomRange.end) {
+        return {start: currentCustomRange.start, end: currentCustomRange.end};
+    }
+    if (viewMode === 'month') {
+        const year = currentViewDate.getFullYear();
+        const month = currentViewDate.getMonth();
+        const firstDay = new Date(year, month, 1);
+        const startDayIndex = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1;
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - startDayIndex);
+        const endDate = new Date(startDate);
+        endDate.setDate(endDate.getDate() + 41);
+        return {start: formatDate(startDate), end: formatDate(endDate)};
+    }
+    const day = currentViewDate.getDay();
+    const diff = currentViewDate.getDate() - day + (day === 0 ? -6 : 1);
+    const startOfWeek = new Date(currentViewDate);
+    startOfWeek.setDate(diff);
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    return {start: formatDate(startOfWeek), end: formatDate(endOfWeek)};
+}
+
+async function loadAttendanceRange(range) {
+    if (!range?.start || !range?.end) {
+        return;
+    }
+    const res = await apiCall('get_attendance_range', null, range);
+    if (res && res.status === 'success') {
+        data.attendance = res.attendance || [];
+        data.attendanceRange = res.attendanceRange || range;
+    }
+}
+
+async function ensureAttendanceRangeForView() {
+    const range = getVisibleDateRange();
+    if (!data.attendanceRange || data.attendanceRange.start !== range.start || data.attendanceRange.end !== range.end) {
+        await loadAttendanceRange(range);
+    }
 }
 function getContrastYIQ(hexcolor){
     if(!hexcolor) return 'black';
@@ -1422,6 +1664,7 @@ function showCalendar(){
     });
     html+=`</div></div>`;
     document.getElementById('mainContent').innerHTML=html;
+    ensureAttendanceRangeForView();
 }
 
 function applyCalendarFilter(){
@@ -1432,8 +1675,10 @@ function applyCalendarFilter(){
     const e = document.getElementById('calEnd').value;
     if(s && e) {
         viewMode = 'custom';
+        currentCustomRange = {start: s, end: e};
     } else if (viewMode === 'custom') {
         viewMode = 'week';
+        currentCustomRange = {start: '', end: ''};
     }
     showCalendar();
     document.getElementById('calStart').value = s;
@@ -1507,7 +1752,8 @@ function openDayModal(ds){
 }
 function openCourseDetail(cid,ds){openAttendance(cid,ds)}
 
-function openAttendance(cid,ds){
+async function openAttendance(cid,ds){
+    await ensureAttendanceRangeForView();
     const course=data.courses.find(c=>c.id==cid);
     if(!course)return;
     const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
@@ -1525,9 +1771,9 @@ function openAttendance(cid,ds){
         const present=att.find(a=>a.studentId===s.id);
         html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
         <div class="attendance-actions">
-        <button type="button" class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" data-att-status="present" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
-        <button type="button" class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" data-att-status="absent" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
-        <button type="button" class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" data-att-status="excused" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
+        <button type="button" class="btn ${present?.status===ATT_STATUS_PRESENT?'btn-success':'btn-secondary'}" data-att-status="${ATT_STATUS_PRESENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_PRESENT})">✓</button>
+        <button type="button" class="btn ${present?.status===ATT_STATUS_ABSENT?'btn-danger':'btn-secondary'}" data-att-status="${ATT_STATUS_ABSENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_ABSENT})">✗</button>
+        <button type="button" class="btn ${present?.status===ATT_STATUS_EXCUSED?'btn-info':'btn-secondary'}" data-att-status="${ATT_STATUS_EXCUSED}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_EXCUSED})">M</button>
         ${canManage ? `<button type="button" class="btn btn-danger btn-sm" onclick="removeStudentFromCourse(${cid},${s.id},'${escapeAttr(ds)}')">Kaldır</button>` : ''}
         </div></div>`;
     });
@@ -1679,12 +1925,12 @@ function updateAttendanceButtonState(cid, ds, sid, status) {
     const row = document.querySelector(`.attendance-item[data-course-id="${cid}"][data-date="${ds}"][data-student-id="${sid}"]`);
     if (!row) return;
     const statusClasses = {
-        present: 'btn-success',
-        absent: 'btn-danger',
-        excused: 'btn-info'
+        [ATT_STATUS_PRESENT]: 'btn-success',
+        [ATT_STATUS_ABSENT]: 'btn-danger',
+        [ATT_STATUS_EXCUSED]: 'btn-info'
     };
     row.querySelectorAll('button[data-att-status]').forEach(btn => {
-        const btnStatus = btn.dataset.attStatus;
+        const btnStatus = Number(btn.dataset.attStatus);
         btn.classList.remove('btn-success', 'btn-danger', 'btn-info', 'btn-secondary');
         if (btnStatus === status) {
             btn.classList.add(statusClasses[btnStatus] || 'btn-secondary');
@@ -2109,15 +2355,15 @@ function showReports(){
     <div class="stats"><div class="stat-card"><h3>${source.courses.length}</h3><p>Toplam Kurs</p></div>
     <div class="stat-card"><h3>${data.teachers.length}</h3><p>Öğretmen</p></div>
     <div class="stat-card"><h3>${source.students.length}</h3><p>Öğrenci</p></div>
-    <div class="stat-card"><h3>${source.attendance.filter(a=>a.status==='absent').length}</h3><p>Devamsızlık</p></div>
-    <div class="stat-card"><h3>${source.attendance.filter(a=>a.status==='excused').length}</h3><p>Mazeretli</p></div></div>
+    <div class="stat-card"><h3>${source.attendance.filter(a=>a.status===ATT_STATUS_ABSENT).length}</h3><p>Devamsızlık</p></div>
+    <div class="stat-card"><h3>${source.attendance.filter(a=>a.status===ATT_STATUS_EXCUSED).length}</h3><p>Mazeretli</p></div></div>
 
     <div class="filter-row">
     ${periodSelect}
     <div class="form-group"><label>Kurs</label><select id="rCourse">${courseOptions}</select></div>
     <div class="form-group"><label>Öğretmen</label>${teacherSelect}</div>
     <div class="form-group"><label>Öğrenci</label><select id="rStudent">${studentOptions}</select></div>
-    <div class="form-group"><label>Durum</label><select id="rStatus"><option value="">Tümü</option><option value="present">Geldi</option><option value="absent">Gelmedi</option><option value="excused">Mazeretli</option></select></div>
+    <div class="form-group"><label>Durum</label><select id="rStatus"><option value="">Tümü</option><option value="${ATT_STATUS_PRESENT}">Geldi</option><option value="${ATT_STATUS_ABSENT}">Gelmedi</option><option value="${ATT_STATUS_EXCUSED}">Mazeretli</option></select></div>
     <div class="form-group"><label>Başlangıç</label><input type="date" id="rStart"></div>
     <div class="form-group"><label>Bitiş</label><input type="date" id="rEnd"></div>
     <div class="form-group" style="align-self: flex-end;"><button class="btn btn-primary" style="width:100%" onclick="generateReport()">Rapor Oluştur</button></div></div>
@@ -2136,7 +2382,8 @@ async function loadReportPeriod(periodId){
     }
     const res = await apiCall('get_report_data', {period_id: periodId});
     if(res && res.status === 'success') {
-        reportData = {courses: res.courses || [], students: res.students || [], attendance: res.attendance || []};
+        const normalizedAttendance = (res.attendance || []).map(a => ({...a, status: Number(a.status)}));
+        reportData = {courses: res.courses || [], students: res.students || [], attendance: normalizedAttendance};
     } else {
         reportData = null;
         alert(res ? res.message : 'Rapor verisi alınamadı');
@@ -2159,7 +2406,7 @@ function generateReport(){
     let filtered=source.attendance;
     if(cid) filtered = filtered.filter(a => a.courseId == cid);
     if(sid) filtered = filtered.filter(a => a.studentId == sid);
-    if(status) filtered = filtered.filter(a => a.status === status);
+    if(status) filtered = filtered.filter(a => a.status === Number(status));
     if(start) filtered = filtered.filter(a => a.date >= start);
     if(end) filtered = filtered.filter(a => a.date <= end);
     
@@ -2168,16 +2415,16 @@ function generateReport(){
         filtered = filtered.filter(a => teacherCourseIds.includes(parseInt(a.courseId))); 
     }
 
-    const absent=filtered.filter(a=>a.status==='absent'), excused=filtered.filter(a=>a.status==='excused');
+    const absent=filtered.filter(a=>a.status===ATT_STATUS_ABSENT), excused=filtered.filter(a=>a.status===ATT_STATUS_EXCUSED);
     let html=`<h3 style="margin:20px 0">Rapor Sonuçları</h3>
     <p>Toplam Kayıt: ${filtered.length} | Devamsızlık: ${absent.length} | Mazeretli: ${excused.length}</p>
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
         const s=source.students.find(x=>x.id===a.studentId), c=source.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
         let statusText='?';
-        if(a.status==='present') statusText='<span style="color:green">✓ Geldi</span>';
-        else if(a.status==='absent') statusText='<span style="color:red">✗ Gelmedi</span>';
-        else if(a.status==='excused') statusText='<span style="color:#17a2b8">M Mazeretli</span>';
+        if(a.status===ATT_STATUS_PRESENT) statusText='<span style="color:green">✓ Geldi</span>';
+        else if(a.status===ATT_STATUS_ABSENT) statusText='<span style="color:red">✗ Gelmedi</span>';
+        else if(a.status===ATT_STATUS_EXCUSED) statusText='<span style="color:#17a2b8">M Mazeretli</span>';
         html+=`<tr><td>${escapeHtml(s?.name)} ${escapeHtml(s?.surname)}</td><td>${escapeHtml(c?.name||'-')}</td><td>${escapeHtml(t?.name||'-')}</td><td>${escapeHtml(a.date)}</td><td>${statusText}</td></tr>`;
     });
     html+=`</table></div>
