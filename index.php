@@ -1248,11 +1248,11 @@ function openAttendance(cid,ds){
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        html+=`<div class="attendance-item"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
+        html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
         <div class="attendance-actions">
-        <button type="button" class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
-        <button type="button" class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
-        <button type="button" class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
+        <button type="button" class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" data-att-status="present" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
+        <button type="button" class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" data-att-status="absent" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
+        <button type="button" class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" data-att-status="excused" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
         ${canManage ? `<button type="button" class="btn btn-danger btn-sm" onclick="removeStudentFromCourse(${cid},${s.id},'${escapeAttr(ds)}')">Kaldır</button>` : ''}
         </div></div>`;
     });
@@ -1367,10 +1367,35 @@ function calculateStudentAge(dateString){
     }
     return age;
 }
-async function markAttendance(cid,ds,sid,status){
-    await apiCall('save_attendance', {courseId:cid, date:ds, studentId:sid, status:status});
-    await refreshData({skipRender: true});
-    openAttendance(cid,ds);
+function updateAttendanceButtonState(cid, ds, sid, status) {
+    const row = document.querySelector(`.attendance-item[data-course-id="${cid}"][data-date="${ds}"][data-student-id="${sid}"]`);
+    if (!row) return;
+    const statusClasses = {
+        present: 'btn-success',
+        absent: 'btn-danger',
+        excused: 'btn-info'
+    };
+    row.querySelectorAll('button[data-att-status]').forEach(btn => {
+        const btnStatus = btn.dataset.attStatus;
+        btn.classList.remove('btn-success', 'btn-danger', 'btn-info', 'btn-secondary');
+        if (btnStatus === status) {
+            btn.classList.add(statusClasses[btnStatus] || 'btn-secondary');
+        } else {
+            btn.classList.add('btn-secondary');
+        }
+    });
+}
+
+async function markAttendance(event, cid, ds, sid, status){
+    if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const res = await apiCall('save_attendance', {courseId:cid, date:ds, studentId:sid, status:status});
+    if (res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        updateAttendanceButtonState(cid, ds, sid, status);
+    }
 }
 async function cancelCourse(cid,ds){
     if(!confirm('Bu günün dersini iptal etmek istiyor musunuz?'))return;
