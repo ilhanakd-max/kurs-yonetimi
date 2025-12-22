@@ -72,17 +72,45 @@ function require_admin($user) {
     }
 }
 
-function require_course_access(PDO $pdo, array $user, int $courseId) {
+function require_course_access(PDO $pdo, array $user, int $courseId, ?int $periodId = null) {
     if (($user['role'] ?? '') === 'admin') {
         return;
     }
     if (($user['role'] ?? '') !== 'teacher') {
         json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 403);
     }
-    $stmt = $pdo->prepare("SELECT id FROM courses WHERE id=? AND teacher_id=?");
-    $stmt->execute([$courseId, $user['id'] ?? 0]);
+    $sql = "SELECT id FROM courses WHERE id=? AND teacher_id=?";
+    $params = [$courseId, $user['id'] ?? 0];
+    if ($periodId) {
+        $sql .= " AND period_id=?";
+        $params[] = $periodId;
+    }
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     if (!$stmt->fetchColumn()) {
         json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 403);
+    }
+}
+
+function get_active_period(PDO $pdo, bool &$createdDefault = false) {
+    $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_active=1 ORDER BY id DESC LIMIT 1");
+    $period = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($period) {
+        return $period;
+    }
+    $createdDefault = true;
+    $pdo->prepare("INSERT INTO course_periods (name, is_active) VALUES (?, 1)")->execute(['Varsayılan Kurs Dönemi']);
+    $periodId = (int)$pdo->lastInsertId();
+    $pdo->prepare("UPDATE course_periods SET is_active=0 WHERE id<>?")->execute([$periodId]);
+    return ['id' => $periodId, 'name' => 'Varsayılan Kurs Dönemi', 'start_date' => null, 'end_date' => null, 'is_active' => 1];
+}
+
+function ensure_period_defaults(PDO $pdo, int $periodId, bool $seedStudents = false): void {
+    $pdo->prepare("UPDATE courses SET period_id=? WHERE period_id IS NULL")->execute([$periodId]);
+    $pdo->prepare("UPDATE student_courses SET period_id=? WHERE period_id IS NULL")->execute([$periodId]);
+    $pdo->prepare("UPDATE attendance SET period_id=? WHERE period_id IS NULL")->execute([$periodId]);
+    if ($seedStudents) {
+        $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students")->execute([$periodId]);
     }
 }
 
@@ -230,6 +258,12 @@ if (isset($_GET['action'])) {
     }
 
     $user = require_auth();
+    $createdDefaultPeriod = false;
+    $activePeriod = get_active_period($pdo, $createdDefaultPeriod);
+    $activePeriodId = (int)($activePeriod['id'] ?? 0);
+    if ($activePeriodId > 0) {
+        ensure_period_defaults($pdo, $activePeriodId, $createdDefaultPeriod);
+    }
 
     if ($action === 'change_password') {
         if ($method !== 'POST') {
@@ -264,7 +298,8 @@ if (isset($_GET['action'])) {
         $stmt = $pdo->query("SELECT * FROM teachers");
         $response['teachers'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $stmt = $pdo->query("SELECT * FROM courses");
+        $stmt = $pdo->prepare("SELECT * FROM courses WHERE period_id=?");
+        $stmt->execute([$activePeriodId]);
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach($courses as &$c) {
             // JS uyumluluğu için teacherId alanını ekliyoruz
@@ -276,16 +311,18 @@ if (isset($_GET['action'])) {
         }
         $response['courses'] = $courses;
 
-        $stmt = $pdo->query("SELECT * FROM students");
+        $stmt = $pdo->prepare("SELECT s.* FROM students s INNER JOIN student_periods sp ON sp.student_id = s.id WHERE sp.period_id=?");
+        $stmt->execute([$activePeriodId]);
         $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach($students as &$s) {
-            $stmt2 = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id = ?");
-            $stmt2->execute([$s['id']]);
+            $stmt2 = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id = ? AND period_id=?");
+            $stmt2->execute([$s['id'], $activePeriodId]);
             $s['courses'] = $stmt2->fetchAll(PDO::FETCH_COLUMN);
         }
         $response['students'] = $students;
 
-        $stmt = $pdo->query("SELECT * FROM attendance");
+        $stmt = $pdo->prepare("SELECT * FROM attendance WHERE period_id=?");
+        $stmt->execute([$activePeriodId]);
         $att = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $cleanAtt = [];
         foreach($att as $a) {
@@ -309,6 +346,13 @@ if (isset($_GET['action'])) {
         $response['settings'] = ['title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü'];
         $response['buildings'] = json_decode($meta['buildings'] ?? '[]');
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
+        $response['activePeriod'] = $activePeriod;
+        if (($user['role'] ?? '') === 'admin') {
+            $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods ORDER BY is_active DESC, id DESC");
+            $response['periods'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            $response['periods'] = [$activePeriod];
+        }
 
         echo json_encode($response);
         exit;
@@ -328,7 +372,7 @@ if (isset($_GET['action'])) {
         $courseIdInt = clean_int($courseId);
         
         if ($courseIdInt && $courseIdInt > 0 && !str_starts_with($courseIdStr, 'new')) {
-            $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=? WHERE id=?";
+            $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=? WHERE id=? AND period_id=?";
             $pdo->prepare($sql)->execute([
                 clean_string($c['name'] ?? '', 150),
                 clean_string($c['color'] ?? '', 20),
@@ -341,13 +385,14 @@ if (isset($_GET['action'])) {
                 clean_date($c['endDate'] ?? null),
                 $cancelled,
                 $mods,
-                $courseIdInt
+                $courseIdInt,
+                $activePeriodId
             ]);
         } else {
             $baseCourseId = clean_int($c['baseCourseId'] ?? null);
             try {
                 $pdo->beginTransaction();
-                $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications) VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+                $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications, period_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
                 $pdo->prepare($sql)->execute([
                     clean_string($c['name'] ?? '', 150),
                     clean_string($c['color'] ?? '', 20),
@@ -359,12 +404,13 @@ if (isset($_GET['action'])) {
                     clean_date($c['startDate'] ?? null),
                     clean_date($c['endDate'] ?? null),
                     $cancelled,
-                    $mods
+                    $mods,
+                    $activePeriodId
                 ]);
                 $newCourseId = (int)$pdo->lastInsertId();
                 if ($baseCourseId) {
-                    $copyStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id) SELECT student_id, ? FROM student_courses WHERE course_id=?");
-                    $copyStmt->execute([$newCourseId, $baseCourseId]);
+                    $copyStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) SELECT student_id, ?, period_id FROM student_courses WHERE course_id=? AND period_id=?");
+                    $copyStmt->execute([$newCourseId, $baseCourseId, $activePeriodId]);
                 }
                 $pdo->commit();
             } catch (Throwable $e) {
@@ -386,9 +432,9 @@ if (isset($_GET['action'])) {
         if (!$id) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        $pdo->prepare("DELETE FROM courses WHERE id=?")->execute([$id]);
-        $pdo->prepare("DELETE FROM student_courses WHERE course_id=?")->execute([$id]);
-        $pdo->prepare("DELETE FROM attendance WHERE course_id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM courses WHERE id=? AND period_id=?")->execute([$id, $activePeriodId]);
+        $pdo->prepare("DELETE FROM student_courses WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
+        $pdo->prepare("DELETE FROM attendance WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -435,16 +481,17 @@ if (isset($_GET['action'])) {
         if (!$sidInt) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$sidInt]);
+        $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=?")->execute([$sidInt, $activePeriodId]);
         if (!empty($s['courses']) && is_array($s['courses'])) {
-            $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)");
+            $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
             foreach($s['courses'] as $cid) {
                 $cidInt = clean_int($cid);
                 if ($cidInt) {
-                    $insert->execute([$sidInt, $cidInt]);
+                    $insert->execute([$sidInt, $cidInt, $activePeriodId]);
                 }
             }
         }
+        $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $sidInt]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -459,6 +506,7 @@ if (isset($_GET['action'])) {
         $pdo->prepare("DELETE FROM students WHERE id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM attendance WHERE student_id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM student_periods WHERE student_id=?")->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -526,6 +574,124 @@ if (isset($_GET['action'])) {
         echo json_encode(['status'=>'success']); exit;
     }
 
+    if ($action === 'create_period') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $name = clean_string($data['name'] ?? '', 150);
+        $startDate = clean_date($data['start_date'] ?? null);
+        $endDate = clean_date($data['end_date'] ?? null);
+        if (!$name) {
+            json_response(['status' => 'error', 'message' => 'Dönem adı zorunludur'], 400);
+        }
+        if ($startDate && $endDate && $startDate > $endDate) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz tarih aralığı'], 400);
+        }
+        $pdo->prepare("INSERT INTO course_periods (name, start_date, end_date, is_active) VALUES (?, ?, ?, 0)")
+            ->execute([$name, $startDate, $endDate]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'activate_period') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        try {
+            $pdo->beginTransaction();
+            $pdo->prepare("UPDATE course_periods SET is_active=0")->execute();
+            $pdo->prepare("UPDATE course_periods SET is_active=1 WHERE id=?")->execute([$id]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'get_report_data') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $periodId = clean_int($data['period_id'] ?? null);
+        if (!$periodId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $stmt = $pdo->prepare("SELECT * FROM courses WHERE period_id=?");
+        $stmt->execute([$periodId]);
+        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach($courses as &$c) {
+            $c['teacherId'] = $c['teacher_id'];
+            $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
+            $c['modifications'] = json_decode($c['modifications']) ?: (object)[];
+            unset($c['cancelled_dates'], $c['modifications_json']);
+        }
+        $stmt = $pdo->prepare("SELECT s.* FROM students s INNER JOIN student_periods sp ON sp.student_id = s.id WHERE sp.period_id=?");
+        $stmt->execute([$periodId]);
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach($students as &$s) {
+            $stmt2 = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id = ? AND period_id=?");
+            $stmt2->execute([$s['id'], $periodId]);
+            $s['courses'] = $stmt2->fetchAll(PDO::FETCH_COLUMN);
+        }
+        $stmt = $pdo->prepare("SELECT * FROM attendance WHERE period_id=?");
+        $stmt->execute([$periodId]);
+        $att = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $cleanAtt = [];
+        foreach($att as $a) {
+            $cleanAtt[] = ['courseId' => $a['course_id'], 'studentId' => $a['student_id'], 'date' => $a['date'], 'status' => $a['status']];
+        }
+        echo json_encode(['status' => 'success', 'courses' => $courses, 'students' => $students, 'attendance' => $cleanAtt]);
+        exit;
+    }
+
+    if ($action === 'reset_data') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $type = clean_string($data['type'] ?? '', 50);
+        $valid = ['student_registrations', 'courses', 'attendance', 'all'];
+        if (!in_array($type, $valid, true)) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        try {
+            $pdo->beginTransaction();
+            if ($type === 'attendance') {
+                $pdo->prepare("DELETE FROM attendance WHERE period_id=?")->execute([$activePeriodId]);
+            } elseif ($type === 'courses') {
+                $pdo->prepare("DELETE FROM attendance WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM student_courses WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM courses WHERE period_id=?")->execute([$activePeriodId]);
+            } elseif ($type === 'student_registrations') {
+                $pdo->prepare("DELETE FROM attendance WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM student_courses WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM student_periods WHERE period_id=?")->execute([$activePeriodId]);
+            } elseif ($type === 'all') {
+                $pdo->prepare("DELETE FROM attendance")->execute();
+                $pdo->prepare("DELETE FROM student_courses")->execute();
+                $pdo->prepare("DELETE FROM courses")->execute();
+                $pdo->prepare("DELETE FROM student_periods")->execute();
+                $pdo->prepare("DELETE FROM students")->execute();
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
     if ($action === 'save_attendance') {
         if ($method !== 'POST') {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
@@ -538,16 +704,16 @@ if (isset($_GET['action'])) {
         if (!$courseId || !$studentId || !$date || !in_array($status, ['present', 'absent', 'excused'], true)) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        require_course_access($pdo, $user, $courseId);
-        $stmt = $pdo->prepare("SELECT id FROM attendance WHERE course_id=? AND student_id=? AND date=?");
-        $stmt->execute([$courseId, $studentId, $date]);
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $stmt = $pdo->prepare("SELECT id FROM attendance WHERE course_id=? AND student_id=? AND date=? AND period_id=?");
+        $stmt->execute([$courseId, $studentId, $date, $activePeriodId]);
         $exist = $stmt->fetch();
 
         if ($exist) {
             $pdo->prepare("UPDATE attendance SET status=? WHERE id=?")->execute([$status, $exist['id']]);
         } else {
-            $pdo->prepare("INSERT INTO attendance (course_id, student_id, date, status) VALUES (?,?,?,?)")
-                ->execute([$courseId, $studentId, $date, $status]);
+            $pdo->prepare("INSERT INTO attendance (course_id, student_id, date, status, period_id) VALUES (?,?,?,?,?)")
+                ->execute([$courseId, $studentId, $date, $status, $activePeriodId]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -560,7 +726,7 @@ if (isset($_GET['action'])) {
         if (!$courseId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        require_course_access($pdo, $user, $courseId);
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
         $name = clean_string($data['name'] ?? '', 100);
         $surname = clean_string($data['surname'] ?? '', 100);
         if (!$name || !$surname) {
@@ -579,7 +745,8 @@ if (isset($_GET['action'])) {
             $stmt = $pdo->prepare($sql);
             $stmt->execute([$name, $surname, $phone, $email, $tc, $dob, $education, $parentName, $parentPhone]);
             $studentId = (int)$pdo->lastInsertId();
-            $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)")->execute([$studentId, $courseId]);
+            $pdo->prepare("INSERT INTO student_periods (student_id, period_id, reg_date) VALUES (?, ?, CURDATE())")->execute([$studentId, $activePeriodId]);
+            $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)")->execute([$studentId, $courseId, $activePeriodId]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -599,11 +766,12 @@ if (isset($_GET['action'])) {
         if (!$courseId || !$studentId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        require_course_access($pdo, $user, $courseId);
-        $stmt = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=?");
-        $stmt->execute([$studentId, $courseId]);
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $stmt = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
+        $stmt->execute([$studentId, $courseId, $activePeriodId]);
         if (!$stmt->fetchColumn()) {
-            $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)")->execute([$studentId, $courseId]);
+            $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $studentId]);
+            $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)")->execute([$studentId, $courseId, $activePeriodId]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -617,11 +785,11 @@ if (isset($_GET['action'])) {
         if (!$courseId || !$studentId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        require_course_access($pdo, $user, $courseId);
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
         try {
             $pdo->beginTransaction();
-            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=?")->execute([$studentId, $courseId]);
-            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=?")->execute([$studentId, $courseId]);
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -849,7 +1017,9 @@ const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
 ];
 
-let data={users:[],teachers:[],courses:[],students:[],attendance:[],holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[]};
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null};
+let reportData=null;
+let reportPeriodId=null;
 let currentUser=null;
 let currentViewDate=new Date();
 let viewMode = 'week'; 
@@ -917,6 +1087,8 @@ async function refreshData(options = {}) {
     const res = await apiCall('get_all_data');
     if(res) {
         data = res;
+        reportData = null;
+        reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
         if(!data.announcements) data.announcements = [];
         if(!data.announcementsAll) data.announcementsAll = [];
@@ -1760,7 +1932,9 @@ async function deleteStudent(id){
 // --- RAPORLAR ---
 function showReports(){
     setActiveNav(4);
+    const source = reportData || data;
     const isTeacher = currentUser.role === 'teacher';
+    const isAdmin = currentUser.role === 'admin';
     
     // Öğretmen ise sadece kendi adını seçili getir, disabled yap
     let teacherSelect = '';
@@ -1768,16 +1942,16 @@ function showReports(){
     let courseOptions = '<option value="">Tümü</option>';
     let studentOptions = '<option value="">Tümü</option>';
 
-    let availableCourses = data.courses;
-    let availableStudents = data.students;
+    let availableCourses = source.courses;
+    let availableStudents = source.students;
 
     if(isTeacher) {
         teacherSelect = `<select id="rTeacher" disabled><option value="${escapeAttr(currentUser.id)}">${escapeHtml(currentUser.name)}</option></select>`;
-        availableCourses = data.courses.filter(c => c.teacherId == currentUser.id);
+        availableCourses = source.courses.filter(c => c.teacherId == currentUser.id);
         
         // Sadece bu kurslara kayıtlı öğrencileri bul
         const teacherCourseIds = availableCourses.map(c => c.id);
-        availableStudents = data.students.filter(s => {
+        availableStudents = source.students.filter(s => {
             return s.courses && s.courses.some(cid => teacherCourseIds.includes(cid));
         });
 
@@ -1788,14 +1962,21 @@ function showReports(){
     courseOptions += availableCourses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('');
     studentOptions += availableStudents.map(s=>`<option value="${escapeAttr(s.id)}">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</option>`).join('');
 
+    let periodSelect = '';
+    if(isAdmin && data.periods && data.periods.length > 0) {
+        const currentPeriodId = reportPeriodId || (data.activePeriod ? data.activePeriod.id : null);
+        periodSelect = `<div class="form-group"><label>Kurs Dönemi</label><select id="rPeriod" onchange="changeReportPeriod(this.value)">${data.periods.map(p=>`<option value="${escapeAttr(p.id)}" ${currentPeriodId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select></div>`;
+    }
+
     let html=`<div class="card"><h2>📊 Raporlar</h2>
-    <div class="stats"><div class="stat-card"><h3>${data.courses.length}</h3><p>Toplam Kurs</p></div>
+    <div class="stats"><div class="stat-card"><h3>${source.courses.length}</h3><p>Toplam Kurs</p></div>
     <div class="stat-card"><h3>${data.teachers.length}</h3><p>Öğretmen</p></div>
-    <div class="stat-card"><h3>${data.students.length}</h3><p>Öğrenci</p></div>
-    <div class="stat-card"><h3>${data.attendance.filter(a=>a.status==='absent').length}</h3><p>Devamsızlık</p></div>
-    <div class="stat-card"><h3>${data.attendance.filter(a=>a.status==='excused').length}</h3><p>Mazeretli</p></div></div>
+    <div class="stat-card"><h3>${source.students.length}</h3><p>Öğrenci</p></div>
+    <div class="stat-card"><h3>${source.attendance.filter(a=>a.status==='absent').length}</h3><p>Devamsızlık</p></div>
+    <div class="stat-card"><h3>${source.attendance.filter(a=>a.status==='excused').length}</h3><p>Mazeretli</p></div></div>
 
     <div class="filter-row">
+    ${periodSelect}
     <div class="form-group"><label>Kurs</label><select id="rCourse">${courseOptions}</select></div>
     <div class="form-group"><label>Öğretmen</label>${teacherSelect}</div>
     <div class="form-group"><label>Öğrenci</label><select id="rStudent">${studentOptions}</select></div>
@@ -1806,7 +1987,27 @@ function showReports(){
     <div id="reportResult"></div></div>`;
     document.getElementById('mainContent').innerHTML=html;
 }
+async function changeReportPeriod(periodId){
+    reportPeriodId = periodId ? parseInt(periodId) : null;
+    await loadReportPeriod(reportPeriodId);
+}
+async function loadReportPeriod(periodId){
+    if(!periodId || currentUser.role !== 'admin') {
+        reportData = null;
+        showReports();
+        return;
+    }
+    const res = await apiCall('get_report_data', {period_id: periodId});
+    if(res && res.status === 'success') {
+        reportData = {courses: res.courses || [], students: res.students || [], attendance: res.attendance || []};
+    } else {
+        reportData = null;
+        alert(res ? res.message : 'Rapor verisi alınamadı');
+    }
+    showReports();
+}
 function generateReport(){
+    const source = reportData || data;
     const cid=document.getElementById('rCourse').value;
     const sid=document.getElementById('rStudent').value, status=document.getElementById('rStatus').value,
     start=document.getElementById('rStart').value, end=document.getElementById('rEnd').value;
@@ -1818,7 +2019,7 @@ function generateReport(){
         tid = document.getElementById('rTeacher').value;
     }
 
-    let filtered=data.attendance;
+    let filtered=source.attendance;
     if(cid) filtered = filtered.filter(a => a.courseId == cid);
     if(sid) filtered = filtered.filter(a => a.studentId == sid);
     if(status) filtered = filtered.filter(a => a.status === status);
@@ -1826,7 +2027,7 @@ function generateReport(){
     if(end) filtered = filtered.filter(a => a.date <= end);
     
     if(tid) { 
-        const teacherCourseIds = data.courses.filter(c => c.teacherId == tid).map(c => c.id); 
+        const teacherCourseIds = source.courses.filter(c => c.teacherId == tid).map(c => c.id); 
         filtered = filtered.filter(a => teacherCourseIds.includes(parseInt(a.courseId))); 
     }
 
@@ -1835,7 +2036,7 @@ function generateReport(){
     <p>Toplam Kayıt: ${filtered.length} | Devamsızlık: ${absent.length} | Mazeretli: ${excused.length}</p>
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
-        const s=data.students.find(x=>x.id===a.studentId), c=data.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
+        const s=source.students.find(x=>x.id===a.studentId), c=source.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
         let statusText='?';
         if(a.status==='present') statusText='<span style="color:green">✓ Geldi</span>';
         else if(a.status==='absent') statusText='<span style="color:red">✗ Gelmedi</span>';
@@ -1860,7 +2061,9 @@ function showAdmin(){
     <button class="tab" onclick="showAdminTab(1)">Tesisler/Sınıflar</button>
     <button class="tab" onclick="showAdminTab(2)">Ek Tatiller</button>
     <button class="tab" onclick="showAdminTab(3)">Duyurular</button>
-    <button class="tab" onclick="showAdminTab(4)">Genel</button></div>
+    <button class="tab" onclick="showAdminTab(4)">Kurs Dönemleri</button>
+    <button class="tab" onclick="showAdminTab(5)">Uygulama Sıfırlama</button>
+    <button class="tab" onclick="showAdminTab(6)">Genel</button></div>
     <div id="adminContent"></div></div>`;
     document.getElementById('mainContent').innerHTML=html;
     showAdminTab(0);
@@ -1902,6 +2105,36 @@ function showAdminTab(idx){
             });
         }
         html+=`</table></div>`;
+    }else if(idx===4){
+        const periods = data.periods || [];
+        html=`<h3>Kurs Dönemleri</h3>
+        <div class="form-group">
+            <input type="text" id="newPeriodName" placeholder="Dönem adı">
+            <input type="date" id="newPeriodStart">
+            <input type="date" id="newPeriodEnd">
+            <button class="btn btn-primary" onclick="addPeriod()">Ekle</button>
+        </div>
+        <div class="table-responsive"><table><tr><th>Dönem</th><th>Tarih</th><th>Durum</th><th>İşlem</th></tr>`;
+        if(periods.length === 0) {
+            html+=`<tr><td colspan="4">Dönem bulunamadı.</td></tr>`;
+        } else {
+            periods.forEach(p=>{
+                const rangeText = p.start_date || p.end_date ? `${escapeHtml(p.start_date || 'Başlangıç yok')} - ${escapeHtml(p.end_date || 'Bitiş yok')}` : 'Tarih yok';
+                const statusText = p.is_active ? 'Aktif' : 'Pasif';
+                html+=`<tr><td>${escapeHtml(p.name)}</td><td>${rangeText}</td><td>${statusText}</td>
+                <td>${p.is_active ? '' : `<button class="btn btn-info btn-sm" onclick="activatePeriod(${p.id})">Aktif Yap</button>`}</td></tr>`;
+            });
+        }
+        html+=`</table></div>`;
+    }else if(idx===5){
+        html=`<h3>Uygulama Sıfırlama</h3>
+        <p style="color:#b00;font-weight:bold;">Bu işlem geri alınamaz!</p>
+        <div class="filter-row" style="background:none;border:none;padding:0;">
+            <div class="form-group"><button class="btn btn-warning" onclick="confirmReset('student_registrations')">Sadece Öğrenci Kayıtlarını Sıfırla</button></div>
+            <div class="form-group"><button class="btn btn-warning" onclick="confirmReset('courses')">Sadece Kursları Sıfırla</button></div>
+            <div class="form-group"><button class="btn btn-warning" onclick="confirmReset('attendance')">Sadece Yoklamayı Sıfırla</button></div>
+            <div class="form-group"><button class="btn btn-danger" onclick="confirmReset('all')">Her Şeyi Sıfırla</button></div>
+        </div>`;
     }else{
         html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
         <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
@@ -1920,6 +2153,35 @@ async function addClass(){const v=document.getElementById('newClass').value;if(v
 async function removeClass(i){const c=[...data.classes];c.splice(i,1);await apiCall('save_meta',{key:'classes',value:c});await refreshData();showAdminTab(1)}
 async function addHoliday(){await apiCall('add_holiday',{date:document.getElementById('newHolDate').value,name:document.getElementById('newHolName').value});await refreshData();showAdminTab(2)}
 async function removeHoliday(d){if(confirm('Silmek istiyor musunuz?')){await apiCall('delete_holiday',{date:d});await refreshData();showAdminTab(2)}}
+async function addPeriod(){
+    const name = document.getElementById('newPeriodName').value;
+    const startDate = document.getElementById('newPeriodStart').value;
+    const endDate = document.getElementById('newPeriodEnd').value;
+    if(!name) return alert('Dönem adı zorunludur.');
+    const res = await apiCall('create_period', {name, start_date: startDate, end_date: endDate});
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        showAdminTab(4);
+    }
+}
+async function activatePeriod(id){
+    if(!confirm('Aktif dönemi değiştirmek istiyor musunuz?')) return;
+    const res = await apiCall('activate_period', {id});
+    if(res && res.status === 'success') {
+        await refreshData();
+        showAdminTab(4);
+    }
+}
+async function confirmReset(type){
+    const warning = 'Bu işlem geri alınamaz!';
+    const confirmText = prompt(`${warning}\nOnaylamak için "ONAYLA" yazın:`);
+    if(confirmText !== 'ONAYLA') return;
+    const res = await apiCall('reset_data', {type});
+    if(res && res.status === 'success') {
+        await refreshData();
+        showAdminTab(5);
+    }
+}
 function openAnnouncementModal(id=null){
     const announcement = (data.announcementsAll || []).find(a => a.id == id) || {title:'', message:'', start_date:'', end_date:'', is_active:1};
     let html=`<div class="modal-header"><h2>📣 ${id ? 'Duyuru Düzenle' : 'Yeni Duyuru'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
