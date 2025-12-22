@@ -913,14 +913,14 @@ async function apiCall(action, payload = null) {
     }
 }
 
-async function refreshData() {
+async function refreshData(options = {}) {
     const res = await apiCall('get_all_data');
     if(res) {
         data = res;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
         if(!data.announcements) data.announcements = [];
         if(!data.announcementsAll) data.announcementsAll = [];
-        if(currentUser) showApp(false); 
+        if(currentUser && !options.skipRender) showApp(false); 
     }
 }
 
@@ -1250,10 +1250,10 @@ function openAttendance(cid,ds){
         const present=att.find(a=>a.studentId===s.id);
         html+=`<div class="attendance-item"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
         <div class="attendance-actions">
-        <button class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
-        <button class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
-        <button class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
-        ${canManage ? `<button class="btn btn-danger btn-sm" onclick="removeStudentFromCourse(${cid},${s.id},'${escapeAttr(ds)}')">Kaldır</button>` : ''}
+        <button type="button" class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
+        <button type="button" class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
+        <button type="button" class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
+        ${canManage ? `<button type="button" class="btn btn-danger btn-sm" onclick="removeStudentFromCourse(${cid},${s.id},'${escapeAttr(ds)}')">Kaldır</button>` : ''}
         </div></div>`;
     });
     html+=`</div>`;
@@ -1297,7 +1297,7 @@ async function saveAttendanceNewStudent(cid,ds){
     };
     const res = await apiCall('add_course_student_new', payload);
     if(res && res.status === 'success') {
-        await refreshData();
+        await refreshData({skipRender: true});
         openAttendance(cid,ds);
     }
 }
@@ -1318,7 +1318,7 @@ async function saveAttendanceExistingStudent(cid,ds){
     if(!studentId){alert('Öğrenci seçiniz.');return;}
     const res = await apiCall('add_course_student_existing', {courseId: cid, studentId});
     if(res && res.status === 'success') {
-        await refreshData();
+        await refreshData({skipRender: true});
         openAttendance(cid,ds);
     }
 }
@@ -1327,7 +1327,7 @@ async function removeStudentFromCourse(cid,sid,ds){
     if(!confirm('Öğrenciyi bu kurstan kaldırmak istiyor musunuz?')) return;
     const res = await apiCall('remove_course_student', {courseId: cid, studentId: sid});
     if(res && res.status === 'success') {
-        await refreshData();
+        await refreshData({skipRender: true});
         openAttendance(cid,ds);
     }
 }
@@ -1369,7 +1369,7 @@ function calculateStudentAge(dateString){
 }
 async function markAttendance(cid,ds,sid,status){
     await apiCall('save_attendance', {courseId:cid, date:ds, studentId:sid, status:status});
-    await refreshData();
+    await refreshData({skipRender: true});
     openAttendance(cid,ds);
 }
 async function cancelCourse(cid,ds){
