@@ -762,6 +762,8 @@ body{font-family:'Segoe UI',sans-serif;background:#f0f4f8;min-height:100vh;posit
 .course-tag{padding:4px 6px;border-radius:4px;margin:3px 0;font-size:0.75em;cursor:pointer;display:block;border-left:4px solid rgba(0,0,0,0.2);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.1)}
 .course-tag:hover{filter:brightness(0.9)}
 .course-tag.cancelled{background:#ffcdd2!important;color:#333!important;text-decoration:line-through;border-left-color:#dc3545}
+.course-tag.upcoming{box-shadow:0 0 0 2px rgba(255,193,7,0.5),0 2px 4px rgba(0,0,0,0.12)}
+.course-tag .upcoming-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;font-size:0.7em;background:rgba(255,255,255,0.75);color:inherit;border:1px solid rgba(0,0,0,0.2)}
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;overflow-y:auto}
 .modal-content{background:#fff;margin:20px auto;padding:20px;border-radius:10px;max-width:600px;width:95%;max-height:90vh;overflow-y:auto}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px}
@@ -839,6 +841,8 @@ footer {position: absolute; bottom: 5px; width: 100%; text-align: center; font-s
 <footer>Created by İlhan Akdeniz</footer>
 <script>
 const CSRF_TOKEN = <?php echo json_encode($_SESSION['csrf_token']); ?>;
+const SERVER_NOW = <?php echo json_encode(date('c')); ?>;
+const SERVER_TIME_OFFSET = new Date(SERVER_NOW).getTime() - Date.now();
 const DAYS=['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Pazar'];
 const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-03-30',name:'Ramazan Bayramı 1. Gün'},{date:'2025-03-31',name:'Ramazan Bayramı 2. Gün'},
@@ -865,6 +869,10 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
     return escapeHtml(value);
+}
+
+function getServerNow() {
+    return new Date(Date.now() + SERVER_TIME_OFFSET);
 }
 
 function sanitizeColor(value) {
@@ -1058,6 +1066,8 @@ function showCalendar(){
         title = `${new Date(customStart).toLocaleDateString('tr-TR')} - ${new Date(customEnd).toLocaleDateString('tr-TR')}`;
     }
 
+    const upcomingCourse = getUpcomingCourseForDates(dates);
+
     const visibleAnnouncements = (data.announcements || []).filter(a => !isAnnouncementHidden(a.id));
     let announcementsHtml = '';
     if (visibleAnnouncements.length) {
@@ -1133,9 +1143,10 @@ function showCalendar(){
             const mod=c.modifications&&c.modifications[ds];
             const bgColor = sanitizeColor(c.color);
             const txtColor = getContrastYIQ(bgColor);
-            html+=`<div class="course-tag${cancelled?' cancelled':''}" style="background-color:${bgColor};color:${txtColor}" 
+            const isUpcoming = upcomingCourse && upcomingCourse.id == c.id && upcomingCourse.date === ds;
+            html+=`<div class="course-tag${cancelled?' cancelled':''}${isUpcoming?' upcoming':''}" style="background-color:${bgColor};color:${txtColor}" 
             onclick="event.stopPropagation();openCourseDetail('${escapeAttr(c.id)}','${escapeAttr(ds)}')">
-            ${escapeHtml(c.name)} <small>${escapeHtml(mod?mod.time:c.time)}</small></div>`;
+            ${escapeHtml(c.name)} <small>${escapeHtml(mod?mod.time:c.time)}</small>${isUpcoming ? '<span class="upcoming-badge">Yaklaşıyor</span>' : ''}</div>`;
         });
         html+=`</div>`;
     });
@@ -1174,6 +1185,18 @@ function getCourseStartMinutes(timeStr){
     return h * 60 + m;
 }
 
+function getCourseStartDateTime(ds, course){
+    const mod = course.modifications && course.modifications[ds];
+    const timeStr = mod ? mod.time : course.time;
+    const startMinutes = getCourseStartMinutes(timeStr);
+    if(startMinutes === Number.MAX_SAFE_INTEGER) return null;
+    const dt = new Date(`${ds}T00:00:00`);
+    const hours = Math.floor(startMinutes / 60);
+    const minutes = startMinutes % 60;
+    dt.setHours(hours, minutes, 0, 0);
+    return dt;
+}
+
 function getCoursesForDate(ds){
     const dt=new Date(ds),dayName=DAYS[dt.getDay()===0?6:dt.getDay()-1];
     const filtered = data.courses.filter(c=>{
@@ -1191,6 +1214,25 @@ function getCoursesForDate(ds){
         })
         .sort((a, b) => (a.timeValue - b.timeValue) || (a.index - b.index))
         .map(item => item.course);
+}
+
+function getUpcomingCourseForDates(dates){
+    const now = getServerNow();
+    let upcoming = null;
+    let order = 0;
+    dates.forEach(dt => {
+        const ds = formatDate(dt);
+        const courses = getCoursesForDate(ds);
+        courses.forEach(course => {
+            order += 1;
+            const startAt = getCourseStartDateTime(ds, course);
+            if(!startAt || startAt <= now) return;
+            if(!upcoming || startAt < upcoming.startAt || (startAt.getTime() === upcoming.startAt.getTime() && order < upcoming.order)){
+                upcoming = {id: course.id, date: ds, startAt, order};
+            }
+        });
+    });
+    return upcoming;
 }
 
 function openDayModal(ds){
