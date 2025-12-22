@@ -93,7 +93,7 @@ function require_course_access(PDO $pdo, array $user, int $courseId, ?int $perio
 }
 
 function get_active_period(PDO $pdo, bool &$createdDefault = false) {
-    $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_active=1 ORDER BY id DESC LIMIT 1");
+    $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_active=1 AND is_deleted=0 ORDER BY id DESC LIMIT 1");
     $period = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($period) {
         return $period;
@@ -348,7 +348,7 @@ if (isset($_GET['action'])) {
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
         $response['activePeriod'] = $activePeriod;
         if (($user['role'] ?? '') === 'admin') {
-            $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods ORDER BY is_active DESC, id DESC");
+            $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_deleted=0 ORDER BY is_active DESC, id DESC");
             $response['periods'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } else {
             $response['periods'] = [$activePeriod];
@@ -588,8 +588,56 @@ if (isset($_GET['action'])) {
         if ($startDate && $endDate && $startDate > $endDate) {
             json_response(['status' => 'error', 'message' => 'Geçersiz tarih aralığı'], 400);
         }
-        $pdo->prepare("INSERT INTO course_periods (name, start_date, end_date, is_active) VALUES (?, ?, ?, 0)")
+        $pdo->prepare("INSERT INTO course_periods (name, start_date, end_date, is_active, is_deleted) VALUES (?, ?, ?, 0, 0)")
             ->execute([$name, $startDate, $endDate]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'update_period') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        $name = clean_string($data['name'] ?? '', 150);
+        $startDate = clean_date($data['start_date'] ?? null);
+        $endDate = clean_date($data['end_date'] ?? null);
+        if (!$id || !$name) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        if ($startDate && $endDate && $startDate > $endDate) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz tarih aralığı'], 400);
+        }
+        $stmt = $pdo->prepare("UPDATE course_periods SET name=?, start_date=?, end_date=? WHERE id=? AND is_deleted=0");
+        $stmt->execute([$name, $startDate, $endDate, $id]);
+        if ($stmt->rowCount() === 0) {
+            json_response(['status' => 'error', 'message' => 'Dönem bulunamadı'], 404);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'delete_period') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $id = clean_int($data['id'] ?? null);
+        if (!$id) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        if ($id === $activePeriodId) {
+            json_response(['status' => 'error', 'message' => 'Aktif dönem silinemez. Önce başka bir dönemi aktif yapın.'], 400);
+        }
+        $stmt = $pdo->prepare("SELECT is_active, is_deleted FROM course_periods WHERE id=?");
+        $stmt->execute([$id]);
+        $period = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$period || (int)$period['is_deleted'] === 1) {
+            json_response(['status' => 'error', 'message' => 'Dönem bulunamadı'], 404);
+        }
+        if ((int)$period['is_active'] === 1) {
+            json_response(['status' => 'error', 'message' => 'Aktif dönem silinemez. Önce başka bir dönemi aktif yapın.'], 400);
+        }
+        $pdo->prepare("UPDATE course_periods SET is_deleted=1, is_active=0 WHERE id=?")->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -604,14 +652,18 @@ if (isset($_GET['action'])) {
         }
         try {
             $pdo->beginTransaction();
-            $pdo->prepare("UPDATE course_periods SET is_active=0")->execute();
-            $pdo->prepare("UPDATE course_periods SET is_active=1 WHERE id=?")->execute([$id]);
+            $pdo->prepare("UPDATE course_periods SET is_active=0 WHERE is_deleted=0")->execute();
+            $stmt = $pdo->prepare("UPDATE course_periods SET is_active=1 WHERE id=? AND is_deleted=0");
+            $stmt->execute([$id]);
+            if ($stmt->rowCount() === 0) {
+                throw new RuntimeException('Dönem bulunamadı');
+            }
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
-            throw $e;
+            json_response(['status' => 'error', 'message' => $e instanceof RuntimeException ? $e->getMessage() : 'İşlem başarısız'], 400);
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -2121,8 +2173,13 @@ function showAdminTab(idx){
             periods.forEach(p=>{
                 const rangeText = p.start_date || p.end_date ? `${escapeHtml(p.start_date || 'Başlangıç yok')} - ${escapeHtml(p.end_date || 'Bitiş yok')}` : 'Tarih yok';
                 const statusText = p.is_active ? 'Aktif' : 'Pasif';
+                const actionButtons = `
+                    <button class="btn btn-info btn-sm" onclick="openPeriodModal(${p.id})">Düzenle</button>
+                    ${p.is_active ? '' : `<button class="btn btn-danger btn-sm" onclick="deletePeriod(${p.id})">Sil</button>`}
+                    ${p.is_active ? '' : `<button class="btn btn-success btn-sm" onclick="activatePeriod(${p.id})">Aktif Yap</button>`}
+                `;
                 html+=`<tr><td>${escapeHtml(p.name)}</td><td>${rangeText}</td><td>${statusText}</td>
-                <td>${p.is_active ? '' : `<button class="btn btn-info btn-sm" onclick="activatePeriod(${p.id})">Aktif Yap</button>`}</td></tr>`;
+                <td>${actionButtons}</td></tr>`;
             });
         }
         html+=`</table></div>`;
@@ -2159,6 +2216,39 @@ async function addPeriod(){
     const endDate = document.getElementById('newPeriodEnd').value;
     if(!name) return alert('Dönem adı zorunludur.');
     const res = await apiCall('create_period', {name, start_date: startDate, end_date: endDate});
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        showAdminTab(4);
+    }
+}
+function openPeriodModal(id){
+    const period = (data.periods || []).find(p => p.id == id);
+    if(!period) return alert('Dönem bulunamadı.');
+    let html=`<div class="modal-header"><h2>✏️ Dönem Düzenle</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Dönem adı</label><input type="text" id="editPeriodName" value="${escapeAttr(period.name || '')}"></div>
+    <div class="form-group"><label>Başlangıç Tarihi</label><input type="date" id="editPeriodStart" value="${escapeAttr(period.start_date || '')}"></div>
+    <div class="form-group"><label>Bitiş Tarihi</label><input type="date" id="editPeriodEnd" value="${escapeAttr(period.end_date || '')}"></div>
+    <button class="btn btn-primary" onclick="savePeriod(${period.id})">Kaydet</button>`;
+    showModal(html);
+}
+async function savePeriod(id){
+    const name = document.getElementById('editPeriodName').value;
+    const startDate = document.getElementById('editPeriodStart').value;
+    const endDate = document.getElementById('editPeriodEnd').value;
+    if(!name) return alert('Dönem adı zorunludur.');
+    const res = await apiCall('update_period', {id, name, start_date: startDate, end_date: endDate});
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        closeModal();
+        showAdminTab(4);
+    }
+}
+async function deletePeriod(id){
+    const warning = "Bu dönem silindiğinde, bu döneme ait tüm kurslar,\nöğrenci kayıtları ve yoklama verileri de silinecektir.\nBu işlem geri alınamaz!";
+    if(!confirm(warning)) return;
+    const confirmText = prompt('Silme işlemini onaylamak için "SIL" yazın:');
+    if(confirmText !== 'SIL') return;
+    const res = await apiCall('delete_period', {id});
     if(res && res.status === 'success') {
         await refreshData({skipRender: true});
         showAdminTab(4);
