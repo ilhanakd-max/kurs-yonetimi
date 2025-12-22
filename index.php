@@ -518,22 +518,23 @@ if (isset($_GET['action'])) {
         }
         require_admin($user);
         $t = $data;
+        $branch = clean_string($t['branch'] ?? '', 150);
         $tid = $t['id'] ?? null;
         $tidStr = is_string($tid) ? $tid : '';
         $tidInt = clean_int($tid);
         if ($tidInt && $tidInt > 0 && !str_starts_with($tidStr, 'new')) {
             if(!empty($t['password'])) {
                  $hash = password_hash(clean_password($t['password'], 255), PASSWORD_DEFAULT);
-                 $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=?, password=? WHERE id=?")
-                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $hash, $tidInt]);
+                 $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=?, password=?, branch=? WHERE id=?")
+                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $hash, $branch ?: null, $tidInt]);
             } else {
-                 $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=? WHERE id=?")
-                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $tidInt]);
+                 $pdo->prepare("UPDATE teachers SET name=?, phone=?, email=?, username=?, branch=? WHERE id=?")
+                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $branch ?: null, $tidInt]);
             }
         } else {
             $hash = password_hash(clean_password($t['password'] ?? '', 255), PASSWORD_DEFAULT);
-            $pdo->prepare("INSERT INTO teachers (name, phone, email, username, password) VALUES (?,?,?,?,?)")
-                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $hash]);
+            $pdo->prepare("INSERT INTO teachers (name, phone, email, username, password, branch) VALUES (?,?,?,?,?,?)")
+                ->execute([clean_string($t['name'] ?? '', 150), clean_string($t['phone'] ?? '', 30), clean_email($t['email'] ?? ''), clean_string($t['username'] ?? '', 100), $hash, $branch ?: null]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -1925,9 +1926,9 @@ function showTeachers(){
     setActiveNav(2);
     let html=`<div class="card"><h2>👨‍🏫 Öğretmen Yönetimi</h2>
     <div class="table-responsive"><button class="btn btn-primary" onclick="openTeacherModal()">+ Yeni Öğretmen</button>
-    <table style="margin-top:15px"><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Kullanıcı Adı</th><th>İşlem</th></tr>`;
+    <table style="margin-top:15px"><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Kullanıcı Adı</th><th>Branş</th><th>İşlem</th></tr>`;
     data.teachers.forEach(t=>{
-        html+=`<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.phone||'-')}</td><td>${escapeHtml(t.email||'-')}</td><td>${escapeHtml(t.username)}</td>
+        html+=`<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.phone||'-')}</td><td>${escapeHtml(t.email||'-')}</td><td>${escapeHtml(t.username)}</td><td>${escapeHtml(t.branch||'-')}</td>
         <td><button class="btn btn-warning" onclick="editTeacher(${t.id})">✏️</button>
         <button class="btn btn-danger" onclick="deleteTeacher(${t.id})">🗑️</button></td></tr>`;
     });
@@ -1940,6 +1941,7 @@ function openTeacherModal(t){
     <div class="form-group"><label>Telefon</label><input type="text" id="tPhone" value="${escapeAttr(t?.phone||'')}"></div>
     <div class="form-group"><label>E-posta</label><input type="email" id="tEmail" value="${escapeAttr(t?.email||'')}"></div>
     <div class="form-group"><label>Kullanıcı Adı</label><input type="text" id="tUser" value="${escapeAttr(t?.username||'')}"></div>
+    <div class="form-group"><label>Branş</label><input type="text" id="tBranch" value="${escapeAttr(t?.branch||'')}"></div>
     <div class="form-group"><label>Şifre</label><input type="password" id="tPass" value="${escapeAttr(t?.password||'')}"></div>
     <button class="btn btn-primary" onclick="saveTeacher(${t?.id||0})">${t?'Güncelle':'Kaydet'}</button>`;
     showModal(html);
@@ -1947,7 +1949,7 @@ function openTeacherModal(t){
 function editTeacher(id){openTeacherModal(data.teachers.find(x=>x.id===id))}
 async function saveTeacher(id){
     const t={id:id||'new',name:document.getElementById('tName').value,phone:document.getElementById('tPhone').value,
-    email:document.getElementById('tEmail').value,username:document.getElementById('tUser').value,password:document.getElementById('tPass').value};
+    email:document.getElementById('tEmail').value,username:document.getElementById('tUser').value,branch:document.getElementById('tBranch').value,password:document.getElementById('tPass').value};
     await apiCall('save_teacher', t);
     await refreshData();
     closeModal();

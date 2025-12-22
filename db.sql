@@ -276,17 +276,18 @@ CREATE TABLE `teachers` (
   `phone` varchar(20) DEFAULT NULL,
   `email` varchar(100) DEFAULT NULL,
   `username` varchar(50) NOT NULL,
-  `password` varchar(255) NOT NULL
+  `password` varchar(255) NOT NULL,
+  `branch` varchar(150) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Tablo döküm verisi `teachers`
 --
 
-INSERT INTO `teachers` (`id`, `name`, `phone`, `email`, `username`, `password`) VALUES
-(1, 'Onur Tabak', '', '', 'onur', '123456'),
-(2, 'Batuhan Tabak', '5346346346346', '', 'batuhan', '123456'),
-(3, 'Aysel Güzel', '05057052602', '', 'aysel', '123456');
+INSERT INTO `teachers` (`id`, `name`, `phone`, `email`, `username`, `password`, `branch`) VALUES
+(1, 'Onur Tabak', '', '', 'onur', '123456', NULL),
+(2, 'Batuhan Tabak', '5346346346346', '', 'batuhan', '123456', NULL),
+(3, 'Aysel Güzel', '05057052602', '', 'aysel', '123456', NULL);
 
 -- --------------------------------------------------------
 
