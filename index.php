@@ -330,20 +330,35 @@ if (isset($_GET['action'])) {
                 $courseIdInt
             ]);
         } else {
-            $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications) VALUES (?,?,?,?,?,?,?,?,?,?,?)";
-            $pdo->prepare($sql)->execute([
-                clean_string($c['name'] ?? '', 150),
-                clean_string($c['color'] ?? '', 20),
-                clean_string($c['day'] ?? '', 20),
-                clean_string($c['time'] ?? '', 20),
-                clean_string($c['building'] ?? '', 150),
-                clean_string($c['classroom'] ?? '', 150),
-                clean_int($c['teacherId'] ?? null),
-                clean_date($c['startDate'] ?? null),
-                clean_date($c['endDate'] ?? null),
-                $cancelled,
-                $mods
-            ]);
+            $baseCourseId = clean_int($c['baseCourseId'] ?? null);
+            try {
+                $pdo->beginTransaction();
+                $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications) VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+                $pdo->prepare($sql)->execute([
+                    clean_string($c['name'] ?? '', 150),
+                    clean_string($c['color'] ?? '', 20),
+                    clean_string($c['day'] ?? '', 20),
+                    clean_string($c['time'] ?? '', 20),
+                    clean_string($c['building'] ?? '', 150),
+                    clean_string($c['classroom'] ?? '', 150),
+                    clean_int($c['teacherId'] ?? null),
+                    clean_date($c['startDate'] ?? null),
+                    clean_date($c['endDate'] ?? null),
+                    $cancelled,
+                    $mods
+                ]);
+                $newCourseId = (int)$pdo->lastInsertId();
+                if ($baseCourseId) {
+                    $copyStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id) SELECT student_id, ? FROM student_courses WHERE course_id=?");
+                    $copyStmt->execute([$newCourseId, $baseCourseId]);
+                }
+                $pdo->commit();
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e;
+            }
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -1210,7 +1225,7 @@ async function saveModification(cid,ds){
     showCalendar();
 }
 
-function openNewCourseModal(ds){
+function openNewCourseModal(ds, isEdit=false){
     let defaultBuilding = data.buildings[0];
     if(currentBuildingFilter && currentBuildingFilter !== "") {
         defaultBuilding = currentBuildingFilter;
@@ -1218,7 +1233,9 @@ function openNewCourseModal(ds){
 
     const defaults = {name:'',day:'Pazartesi',time:'',building:defaultBuilding,classroom:data.classes[0],teacherId:'',start:'',end:'',color:'#e3f2fd'};
     if(ds){const dt=new Date(ds);defaults.day=DAYS[dt.getDay()===0?6:dt.getDay()-1];defaults.start=ds;}
+    const templateOptions = data.courses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)} (${escapeHtml(c.day)} ${escapeHtml(c.time||'')})</option>`).join('');
     let html=`<div class="modal-header"><h2>➕ Yeni Kurs</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Mevcut kurstan ayarları al</label><select id="cTemplate" onchange="applyCourseTemplate()" ${isEdit ? 'disabled' : ''}><option value="">Seçiniz</option>${templateOptions}</select></div>
     <div class="form-group"><label>Kurs Adı</label><input type="text" id="cName"></div>
     <div class="form-group"><label>Renk</label><input type="color" id="cColor" value="${escapeAttr(defaults.color)}"></div>
     <div class="form-group"><label>Gün</label><select id="cDay">${DAYS.map(d=>`<option ${d===defaults.day?'selected':''}>${escapeHtml(d)}</option>`).join('')}</select></div>
@@ -1231,13 +1248,33 @@ function openNewCourseModal(ds){
     <button class="btn btn-primary" onclick="saveCourse()">Kaydet</button>`;
     showModal(html);
 }
+function applyCourseTemplate(){
+    const templateId = document.getElementById('cTemplate')?.value;
+    if(!templateId) return;
+    const template = data.courses.find(c=>c.id==templateId);
+    if(!template) return;
+    document.getElementById('cName').value = template.name || '';
+    document.getElementById('cColor').value = template.color || '#e3f2fd';
+    document.getElementById('cDay').value = template.day || document.getElementById('cDay').value;
+    document.getElementById('cTime').value = template.time || '';
+    document.getElementById('cBuilding').value = template.building || document.getElementById('cBuilding').value;
+    document.getElementById('cClass').value = template.classroom || document.getElementById('cClass').value;
+    document.getElementById('cTeacher').value = template.teacherId || '';
+    if(!document.getElementById('cStart').value){
+        document.getElementById('cStart').value = template.startDate || '';
+    }
+    if(!document.getElementById('cEnd').value){
+        document.getElementById('cEnd').value = template.endDate || '';
+    }
+}
 async function saveCourse(){
     const c={id:document.getElementById('cName').getAttribute('data-id') || 'new',
         name:document.getElementById('cName').value,color:document.getElementById('cColor').value,
         day:document.getElementById('cDay').value,time:document.getElementById('cTime').value,
         building:document.getElementById('cBuilding').value,classroom:document.getElementById('cClass').value,
         teacherId:document.getElementById('cTeacher').value,startDate:document.getElementById('cStart').value,
-        endDate:document.getElementById('cEnd').value,cancelledDates:[],modifications:{}};
+        endDate:document.getElementById('cEnd').value,cancelledDates:[],modifications:{},
+        baseCourseId:document.getElementById('cTemplate')?.value || ''};
     await apiCall('save_course', c);
     await refreshData();
     closeModal();
@@ -1289,7 +1326,7 @@ function filterCourses(){
 
 function editCourse(id){
     const c=data.courses.find(x=>x.id===id);
-    openNewCourseModal();
+    openNewCourseModal(null, true);
     setTimeout(()=>{
         document.getElementById('cName').value=c.name;document.getElementById('cName').setAttribute('data-id', c.id);
         document.getElementById('cColor').value=c.color||'#e3f2fd';document.getElementById('cDay').value=c.day;
