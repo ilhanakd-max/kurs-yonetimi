@@ -303,7 +303,9 @@ if (isset($_GET['action'])) {
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach($courses as &$c) {
             // JS uyumluluğu için teacherId alanını ekliyoruz
-            $c['teacherId'] = $c['teacher_id']; 
+            $c['teacherId'] = $c['teacher_id'];
+            $c['startDate'] = $c['start_date'] ?? null;
+            $c['endDate'] = $c['end_date'] ?? null;
             
             $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
             $c['modifications'] = json_decode($c['modifications']) ?: (object)[];
