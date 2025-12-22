@@ -25,6 +25,28 @@ SET time_zone = "+00:00";
 -- --------------------------------------------------------
 
 --
+-- Tablo için tablo yapısı `course_periods`
+--
+
+CREATE TABLE `course_periods` (
+  `id` int(11) NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `start_date` date DEFAULT NULL,
+  `end_date` date DEFAULT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Tablo döküm verisi `course_periods`
+--
+
+INSERT INTO `course_periods` (`id`, `name`, `start_date`, `end_date`, `is_active`) VALUES
+(1, '2025–2026 Kurs Dönemi', '2025-09-01', '2026-06-30', 1);
+
+-- --------------------------------------------------------
+
+--
 -- Tablo için tablo yapısı `announcements`
 --
 
@@ -49,18 +71,19 @@ CREATE TABLE `attendance` (
   `course_id` int(11) NOT NULL,
   `student_id` int(11) NOT NULL,
   `date` date NOT NULL,
-  `status` varchar(20) NOT NULL
+  `status` varchar(20) NOT NULL,
+  `period_id` int(11) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Tablo döküm verisi `attendance`
 --
 
-INSERT INTO `attendance` (`id`, `course_id`, `student_id`, `date`, `status`) VALUES
-(1, 1, 1, '2025-12-15', 'present'),
-(2, 2, 1, '2025-12-16', 'present'),
-(3, 2, 1, '2025-12-02', 'present'),
-(4, 3, 1, '2025-12-15', 'present');
+INSERT INTO `attendance` (`id`, `course_id`, `student_id`, `date`, `status`, `period_id`) VALUES
+(1, 1, 1, '2025-12-15', 'present', 1),
+(2, 2, 1, '2025-12-16', 'present', 1),
+(3, 2, 1, '2025-12-02', 'present', 1),
+(4, 3, 1, '2025-12-15', 'present', 1);
 
 -- --------------------------------------------------------
 
@@ -80,17 +103,18 @@ CREATE TABLE `courses` (
   `start_date` date NOT NULL,
   `end_date` date NOT NULL,
   `cancelled_dates` text DEFAULT NULL,
-  `modifications` text DEFAULT NULL
+  `modifications` text DEFAULT NULL,
+  `period_id` int(11) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Tablo döküm verisi `courses`
 --
 
-INSERT INTO `courses` (`id`, `name`, `color`, `day`, `time`, `building`, `classroom`, `teacher_id`, `start_date`, `end_date`, `cancelled_dates`, `modifications`) VALUES
-(1, 'Ritim Kursu (Sabah)', '#1879bf', 'Pazartesi', '10:00-12:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 1, '2025-12-01', '2026-06-30', '[]', '[]'),
-(2, 'Halk Dansları', '#a1ee6d', 'Salı', '18:00-20:00', 'Amfi Tiyatro', 'Amfi Tiyatro Salonu', 2, '2025-12-01', '2026-06-30', '[]', '[]'),
-(3, 'Tiyatro Kursu', '#f0b40f', 'Pazartesi', '15:30-22:30', 'Çakabey Kültür Merkezi', 'Tiyatro Salonu', 3, '2025-12-01', '2026-06-30', '[]', '[]');
+INSERT INTO `courses` (`id`, `name`, `color`, `day`, `time`, `building`, `classroom`, `teacher_id`, `start_date`, `end_date`, `cancelled_dates`, `modifications`, `period_id`) VALUES
+(1, 'Ritim Kursu (Sabah)', '#1879bf', 'Pazartesi', '10:00-12:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 1, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(2, 'Halk Dansları', '#a1ee6d', 'Salı', '18:00-20:00', 'Amfi Tiyatro', 'Amfi Tiyatro Salonu', 2, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(3, 'Tiyatro Kursu', '#f0b40f', 'Pazartesi', '15:30-22:30', 'Çakabey Kültür Merkezi', 'Tiyatro Salonu', 3, '2025-12-01', '2026-06-30', '[]', '[]', 1);
 
 -- --------------------------------------------------------
 
@@ -202,22 +226,42 @@ INSERT INTO `students` (`id`, `name`, `surname`, `phone`, `email`, `tc`, `reg_da
 -- --------------------------------------------------------
 
 --
+-- Tablo için tablo yapısı `student_periods`
+--
+
+CREATE TABLE `student_periods` (
+  `student_id` int(11) NOT NULL,
+  `period_id` int(11) NOT NULL,
+  `reg_date` date DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Tablo döküm verisi `student_periods`
+--
+
+INSERT INTO `student_periods` (`student_id`, `period_id`, `reg_date`) VALUES
+(1, 1, '2025-12-19');
+
+-- --------------------------------------------------------
+
+--
 -- Tablo için tablo yapısı `student_courses`
 --
 
 CREATE TABLE `student_courses` (
   `student_id` int(11) NOT NULL,
-  `course_id` int(11) NOT NULL
+  `course_id` int(11) NOT NULL,
+  `period_id` int(11) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Tablo döküm verisi `student_courses`
 --
 
-INSERT INTO `student_courses` (`student_id`, `course_id`) VALUES
-(1, 1),
-(1, 2),
-(1, 3);
+INSERT INTO `student_courses` (`student_id`, `course_id`, `period_id`) VALUES
+(1, 1, 1),
+(1, 2, 1),
+(1, 3, 1);
 
 -- --------------------------------------------------------
 
@@ -274,6 +318,13 @@ INSERT INTO `users` (`id`, `name`, `username`, `password`, `role`) VALUES
 -- Tablo için indeksler `attendance`
 --
 ALTER TABLE `attendance`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_attendance_period` (`period_id`);
+
+--
+-- Tablo için indeksler `course_periods`
+--
+ALTER TABLE `course_periods`
   ADD PRIMARY KEY (`id`);
 
 --
@@ -287,6 +338,12 @@ ALTER TABLE `announcements`
 --
 ALTER TABLE `courses`
   ADD PRIMARY KEY (`id`);
+
+--
+-- Tablo için indeksler `courses` (dönem)
+--
+ALTER TABLE `courses`
+  ADD KEY `idx_courses_period` (`period_id`);
 
 --
 -- Tablo için indeksler `holidays`
@@ -307,10 +364,18 @@ ALTER TABLE `students`
   ADD PRIMARY KEY (`id`);
 
 --
+-- Tablo için indeksler `student_periods`
+--
+ALTER TABLE `student_periods`
+  ADD PRIMARY KEY (`student_id`,`period_id`),
+  ADD KEY `idx_student_periods_period` (`period_id`);
+
+--
 -- Tablo için indeksler `student_courses`
 --
 ALTER TABLE `student_courses`
-  ADD PRIMARY KEY (`student_id`,`course_id`);
+  ADD PRIMARY KEY (`student_id`,`course_id`,`period_id`),
+  ADD KEY `idx_student_courses_period` (`period_id`);
 
 --
 -- Tablo için indeksler `teachers`
@@ -325,6 +390,22 @@ ALTER TABLE `users`
   ADD PRIMARY KEY (`id`);
 
 --
+-- Tablo için kısıtlamalar
+--
+ALTER TABLE `courses`
+  ADD CONSTRAINT `fk_courses_period` FOREIGN KEY (`period_id`) REFERENCES `course_periods` (`id`) ON DELETE RESTRICT;
+
+ALTER TABLE `attendance`
+  ADD CONSTRAINT `fk_attendance_period` FOREIGN KEY (`period_id`) REFERENCES `course_periods` (`id`) ON DELETE RESTRICT;
+
+ALTER TABLE `student_courses`
+  ADD CONSTRAINT `fk_student_courses_period` FOREIGN KEY (`period_id`) REFERENCES `course_periods` (`id`) ON DELETE RESTRICT;
+
+ALTER TABLE `student_periods`
+  ADD CONSTRAINT `fk_student_periods_period` FOREIGN KEY (`period_id`) REFERENCES `course_periods` (`id`) ON DELETE RESTRICT,
+  ADD CONSTRAINT `fk_student_periods_student` FOREIGN KEY (`student_id`) REFERENCES `students` (`id`) ON DELETE CASCADE;
+
+--
 -- Dökümü yapılmış tablolar için AUTO_INCREMENT değeri
 --
 
@@ -333,6 +414,12 @@ ALTER TABLE `users`
 --
 ALTER TABLE `attendance`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
+
+--
+-- Tablo için AUTO_INCREMENT değeri `course_periods`
+--
+ALTER TABLE `course_periods`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
 -- Tablo için AUTO_INCREMENT değeri `announcements`
