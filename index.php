@@ -828,6 +828,54 @@ if (isset($_GET['action'])) {
         echo json_encode(['status'=>'success']); exit;
     }
 
+    if ($action === 'add_course_student_existing_bulk') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        $studentIds = $data['studentIds'] ?? [];
+        if (!$courseId || !is_array($studentIds)) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $cleanStudentIds = [];
+        foreach ($studentIds as $studentId) {
+            $cleanId = clean_int($studentId);
+            if ($cleanId) {
+                $cleanStudentIds[] = $cleanId;
+            }
+        }
+        $cleanStudentIds = array_values(array_unique($cleanStudentIds));
+        if (!$cleanStudentIds) {
+            json_response(['status' => 'error', 'message' => 'Öğrenci seçiniz.'], 400);
+        }
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $placeholders = implode(',', array_fill(0, count($cleanStudentIds), '?'));
+        $params = array_merge([$courseId, $activePeriodId], $cleanStudentIds);
+        $stmt = $pdo->prepare("SELECT student_id FROM student_courses WHERE course_id=? AND period_id=? AND student_id IN ($placeholders)");
+        $stmt->execute($params);
+        $existingIds = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+        $existingLookup = array_fill_keys($existingIds ?: [], true);
+        $newIds = array_values(array_filter($cleanStudentIds, fn($sid) => empty($existingLookup[$sid])));
+        if ($newIds) {
+            try {
+                $pdo->beginTransaction();
+                $periodStmt = $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) VALUES (?, ?, CURDATE())");
+                $courseStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
+                foreach ($newIds as $studentId) {
+                    $periodStmt->execute([$studentId, $activePeriodId]);
+                    $courseStmt->execute([$studentId, $courseId, $activePeriodId]);
+                }
+                $pdo->commit();
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e;
+            }
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
     if ($action === 'remove_course_student') {
         if ($method !== 'POST') {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
@@ -1530,10 +1578,27 @@ function openAttendanceExistingStudent(cid,ds){
     const available = data.students.filter(s => !(s.courses && s.courses.includes(parseInt(cid))));
     let options = '<option value="">Seçiniz</option>';
     options += available.map(s => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</option>`).join('');
+    const rows = available.map(s => `
+        <tr>
+            <td><input type="checkbox" class="att-existing-student" value="${escapeAttr(s.id)}"></td>
+            <td>${escapeHtml(s.name)} ${escapeHtml(s.surname)}</td>
+        </tr>
+    `).join('');
     let html=`<div class="modal-header"><h2>➕ Kayıtlı Öğrenci Ekle</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div class="form-group"><label>Öğrenci</label>
     <select id="attExistingStudent">${options}</select></div>
-    <button class="btn btn-primary" onclick="saveAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">Ekle</button>`;
+    <button class="btn btn-primary" onclick="saveAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">Ekle</button>
+    <hr>
+    <div class="table-responsive">
+        <table>
+            <tr>
+                <th><input type="checkbox" id="attExistingSelectAll" onclick="toggleAttendanceExistingStudents(this)"></th>
+                <th>Öğrenci</th>
+            </tr>
+            ${rows || '<tr><td colspan="2">Eklenebilecek öğrenci bulunamadı.</td></tr>'}
+        </table>
+    </div>
+    <button class="btn btn-primary" onclick="saveAttendanceExistingStudentsBulk(${cid},'${escapeAttr(ds)}')">Seçilen Öğrencileri Kursa Ekle</button>`;
     showModal(html);
 }
 
@@ -1541,6 +1606,22 @@ async function saveAttendanceExistingStudent(cid,ds){
     const studentId = parseInt(document.getElementById('attExistingStudent').value);
     if(!studentId){alert('Öğrenci seçiniz.');return;}
     const res = await apiCall('add_course_student_existing', {courseId: cid, studentId});
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        openAttendance(cid,ds);
+    }
+}
+
+function toggleAttendanceExistingStudents(source){
+    document.querySelectorAll('.att-existing-student').forEach(cb => {
+        cb.checked = source.checked;
+    });
+}
+
+async function saveAttendanceExistingStudentsBulk(cid,ds){
+    const selected = Array.from(document.querySelectorAll('.att-existing-student:checked')).map(cb => parseInt(cb.value));
+    if(!selected.length){alert('Öğrenci seçiniz.');return;}
+    const res = await apiCall('add_course_student_existing_bulk', {courseId: cid, studentIds: selected});
     if(res && res.status === 'success') {
         await refreshData({skipRender: true});
         openAttendance(cid,ds);
