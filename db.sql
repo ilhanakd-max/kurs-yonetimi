@@ -34,6 +34,7 @@ CREATE TABLE `course_periods` (
   `start_date` date DEFAULT NULL,
   `end_date` date DEFAULT NULL,
   `is_active` tinyint(1) NOT NULL DEFAULT 0,
+  `is_deleted` tinyint(1) NOT NULL DEFAULT 0,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -41,8 +42,8 @@ CREATE TABLE `course_periods` (
 -- Tablo döküm verisi `course_periods`
 --
 
-INSERT INTO `course_periods` (`id`, `name`, `start_date`, `end_date`, `is_active`) VALUES
-(1, '2025–2026 Kurs Dönemi', '2025-09-01', '2026-06-30', 1);
+INSERT INTO `course_periods` (`id`, `name`, `start_date`, `end_date`, `is_active`, `is_deleted`) VALUES
+(1, '2025–2026 Kurs Dönemi', '2025-09-01', '2026-06-30', 1, 0);
 
 -- --------------------------------------------------------
 
