@@ -1163,15 +1163,34 @@ function toggleView(mode){viewMode=mode;showCalendar()}
 function changeDate(dir){if(viewMode==='week') currentViewDate.setDate(currentViewDate.getDate()+dir*7);else currentViewDate.setMonth(currentViewDate.getMonth()+dir);showCalendar()}
 function goToToday(){currentViewDate=new Date();showCalendar()}
 
+function getCourseStartMinutes(timeStr){
+    if(!timeStr) return Number.MAX_SAFE_INTEGER;
+    const start = String(timeStr).split('-')[0].trim();
+    const match = start.match(/^(\d{1,2})(?::(\d{2}))?/);
+    if(!match) return Number.MAX_SAFE_INTEGER;
+    const h = parseInt(match[1],10);
+    const m = parseInt(match[2] || '0',10);
+    if(Number.isNaN(h) || Number.isNaN(m)) return Number.MAX_SAFE_INTEGER;
+    return h * 60 + m;
+}
+
 function getCoursesForDate(ds){
     const dt=new Date(ds),dayName=DAYS[dt.getDay()===0?6:dt.getDay()-1];
-    return data.courses.filter(c=>{
+    const filtered = data.courses.filter(c=>{
         if(ds<c.startDate||ds>c.endDate) return false;
         if(c.day!==dayName) return false;
         if(currentBuildingFilter && c.building !== currentBuildingFilter) return false;
         if(currentUser && currentUser.role === 'teacher' && c.teacherId != currentUser.id) return false;
         return true;
     });
+    return filtered
+        .map((c, index) => {
+            const mod = c.modifications && c.modifications[ds];
+            const timeValue = getCourseStartMinutes(mod ? mod.time : c.time);
+            return {course: c, index, timeValue};
+        })
+        .sort((a, b) => (a.timeValue - b.timeValue) || (a.index - b.index))
+        .map(item => item.course);
 }
 
 function openDayModal(ds){
