@@ -72,6 +72,20 @@ function require_admin($user) {
     }
 }
 
+function require_course_access(PDO $pdo, array $user, int $courseId) {
+    if (($user['role'] ?? '') === 'admin') {
+        return;
+    }
+    if (($user['role'] ?? '') !== 'teacher') {
+        json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 403);
+    }
+    $stmt = $pdo->prepare("SELECT id FROM courses WHERE id=? AND teacher_id=?");
+    $stmt->execute([$courseId, $user['id'] ?? 0]);
+    if (!$stmt->fetchColumn()) {
+        json_response(['status' => 'error', 'message' => 'Yetkisiz erişim'], 403);
+    }
+}
+
 function stream_database_backup(PDO $pdo, string $dbName) {
     $timestamp = date('Ymd_His');
     $fileName = 'backup_' . $dbName . '_' . $timestamp . '.sql';
@@ -524,6 +538,7 @@ if (isset($_GET['action'])) {
         if (!$courseId || !$studentId || !$date || !in_array($status, ['present', 'absent', 'excused'], true)) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
+        require_course_access($pdo, $user, $courseId);
         $stmt = $pdo->prepare("SELECT id FROM attendance WHERE course_id=? AND student_id=? AND date=?");
         $stmt->execute([$courseId, $studentId, $date]);
         $exist = $stmt->fetch();
@@ -533,6 +548,86 @@ if (isset($_GET['action'])) {
         } else {
             $pdo->prepare("INSERT INTO attendance (course_id, student_id, date, status) VALUES (?,?,?,?)")
                 ->execute([$courseId, $studentId, $date, $status]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'add_course_student_new') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        if (!$courseId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        require_course_access($pdo, $user, $courseId);
+        $name = clean_string($data['name'] ?? '', 100);
+        $surname = clean_string($data['surname'] ?? '', 100);
+        if (!$name || !$surname) {
+            json_response(['status' => 'error', 'message' => 'Ad ve soyad zorunludur'], 400);
+        }
+        $phone = clean_string($data['phone'] ?? '', 30);
+        $email = clean_email($data['email'] ?? '');
+        $tc = clean_string($data['tc'] ?? '', 20);
+        $dob = clean_date($data['date_of_birth'] ?? null);
+        $education = clean_string($data['education'] ?? '', 150);
+        $parentName = clean_string($data['parent_name'] ?? '', 150);
+        $parentPhone = clean_string($data['parent_phone'] ?? '', 30);
+        try {
+            $pdo->beginTransaction();
+            $sql = "INSERT INTO students (name, surname, phone, email, tc, date_of_birth, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$name, $surname, $phone, $email, $tc, $dob, $education, $parentName, $parentPhone]);
+            $studentId = (int)$pdo->lastInsertId();
+            $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)")->execute([$studentId, $courseId]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'add_course_student_existing') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        $studentId = clean_int($data['studentId'] ?? null);
+        if (!$courseId || !$studentId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        require_course_access($pdo, $user, $courseId);
+        $stmt = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=?");
+        $stmt->execute([$studentId, $courseId]);
+        if (!$stmt->fetchColumn()) {
+            $pdo->prepare("INSERT INTO student_courses (student_id, course_id) VALUES (?, ?)")->execute([$studentId, $courseId]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'remove_course_student') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        $studentId = clean_int($data['studentId'] ?? null);
+        if (!$courseId || !$studentId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        require_course_access($pdo, $user, $courseId);
+        try {
+            $pdo->beginTransaction();
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=?")->execute([$studentId, $courseId]);
+            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=?")->execute([$studentId, $courseId]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -1117,8 +1212,13 @@ function openAttendance(cid,ds){
     if(!course)return;
     const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
     const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
+    const canManage = currentUser.role === 'admin' || (currentUser.role === 'teacher' && course.teacherId == currentUser.id);
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${new Date(ds).toLocaleDateString('tr-TR')}</p>
+    ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
+        <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
+        <button class="btn btn-info btn-sm" onclick="openAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">➕ Kayıtlı Öğrenci</button>
+    </div>` : ''}
     <div class="attendance-list" style="margin-top:15px">`;
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
@@ -1128,10 +1228,83 @@ function openAttendance(cid,ds){
         <button class="btn ${present?.status==='present'?'btn-success':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'present')">✓</button>
         <button class="btn ${present?.status==='absent'?'btn-danger':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'absent')">✗</button>
         <button class="btn ${present?.status==='excused'?'btn-info':'btn-secondary'}" onclick="markAttendance(${cid},'${escapeAttr(ds)}',${s.id},'excused')">M</button>
+        ${canManage ? `<button class="btn btn-danger btn-sm" onclick="removeStudentFromCourse(${cid},${s.id},'${escapeAttr(ds)}')">Kaldır</button>` : ''}
         </div></div>`;
     });
     html+=`</div>`;
     showModal(html);
+}
+
+function openAttendanceNewStudent(cid,ds){
+    let html=`<div class="modal-header"><h2>➕ Yoklamadan Yeni Öğrenci</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
+        <div class="form-group"><label>Ad</label><input type="text" id="attNewName"></div>
+        <div class="form-group"><label>Soyad</label><input type="text" id="attNewSurname"></div>
+    </div>
+    <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
+        <div class="form-group"><label>TC Kimlik</label><input type="text" id="attNewTc"></div>
+        <div class="form-group"><label>Doğum Tarihi</label><input type="date" id="attNewDob"></div>
+    </div>
+    <div class="form-group"><label>Eğitim Durumu</label><input type="text" id="attNewEducation"></div>
+    <div class="form-group"><label>Kendi Telefonu</label><input type="text" id="attNewPhone"></div>
+    <div class="form-group"><label>E-posta</label><input type="email" id="attNewEmail"></div>
+    <hr>
+    <div class="filter-row" style="background:none; border:none; padding:0; margin:0;">
+        <div class="form-group"><label>Veli Adı</label><input type="text" id="attNewParentName"></div>
+        <div class="form-group"><label>Veli Telefonu</label><input type="text" id="attNewParentPhone"></div>
+    </div>
+    <button class="btn btn-primary" onclick="saveAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">Kaydet</button>`;
+    showModal(html);
+}
+
+async function saveAttendanceNewStudent(cid,ds){
+    const payload = {
+        courseId: cid,
+        name: document.getElementById('attNewName').value,
+        surname: document.getElementById('attNewSurname').value,
+        tc: document.getElementById('attNewTc').value,
+        date_of_birth: document.getElementById('attNewDob').value,
+        education: document.getElementById('attNewEducation').value,
+        phone: document.getElementById('attNewPhone').value,
+        email: document.getElementById('attNewEmail').value,
+        parent_name: document.getElementById('attNewParentName').value,
+        parent_phone: document.getElementById('attNewParentPhone').value
+    };
+    const res = await apiCall('add_course_student_new', payload);
+    if(res && res.status === 'success') {
+        await refreshData();
+        openAttendance(cid,ds);
+    }
+}
+
+function openAttendanceExistingStudent(cid,ds){
+    const available = data.students.filter(s => !(s.courses && s.courses.includes(parseInt(cid))));
+    let options = '<option value="">Seçiniz</option>';
+    options += available.map(s => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</option>`).join('');
+    let html=`<div class="modal-header"><h2>➕ Kayıtlı Öğrenci Ekle</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Öğrenci</label>
+    <select id="attExistingStudent">${options}</select></div>
+    <button class="btn btn-primary" onclick="saveAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">Ekle</button>`;
+    showModal(html);
+}
+
+async function saveAttendanceExistingStudent(cid,ds){
+    const studentId = parseInt(document.getElementById('attExistingStudent').value);
+    if(!studentId){alert('Öğrenci seçiniz.');return;}
+    const res = await apiCall('add_course_student_existing', {courseId: cid, studentId});
+    if(res && res.status === 'success') {
+        await refreshData();
+        openAttendance(cid,ds);
+    }
+}
+
+async function removeStudentFromCourse(cid,sid,ds){
+    if(!confirm('Öğrenciyi bu kurstan kaldırmak istiyor musunuz?')) return;
+    const res = await apiCall('remove_course_student', {courseId: cid, studentId: sid});
+    if(res && res.status === 'success') {
+        await refreshData();
+        openAttendance(cid,ds);
+    }
 }
 function openStudentInfo(sid){
     const s = data.students.find(st => st.id === sid);
