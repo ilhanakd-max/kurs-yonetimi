@@ -519,6 +519,40 @@ if (isset($_GET['action'])) {
         exit;
     }
 
+    if ($action === 'check_copy_course_conflicts') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $days = $data['days'] ?? [];
+        $time = clean_string($data['time'] ?? '', 20);
+        $building = clean_string($data['building'] ?? '', 150);
+        $classroom = clean_string($data['classroom'] ?? '', 150);
+        $teacherId = clean_int($data['teacherId'] ?? null);
+        $startDate = clean_date($data['startDate'] ?? null);
+        $endDate = clean_date($data['endDate'] ?? null);
+        if (!is_array($days) || !$days) {
+            json_response(['status' => 'error', 'message' => 'Lütfen en az bir gün seçiniz.'], 400);
+        }
+        $messages = [];
+        foreach ($days as $dayValue) {
+            $day = clean_string($dayValue ?? '', 20);
+            if (!$day) {
+                continue;
+            }
+            $conflicts = check_course_conflicts($pdo, $activePeriodId, null, $day, $time, $building, $classroom, $teacherId, $startDate, $endDate);
+            foreach ($conflicts as $conflict) {
+                $messages[] = $day . ': ' . $conflict;
+            }
+        }
+        if ($messages) {
+            $messages[] = 'Lütfen farklı bir saat veya gün seçiniz.';
+            json_response(['status' => 'error', 'message' => implode("\n", $messages)], 400);
+        }
+        echo json_encode(['status' => 'success']);
+        exit;
+    }
+
     // KAYDETME İŞLEMLERİ
     if ($action === 'save_course') {
         if ($method !== 'POST') {
@@ -2028,6 +2062,7 @@ function openNewCourseModal(ds, isEdit=false){
 function openCopyCourseModal(courseId){
     const course = data.courses.find(c => c.id == courseId);
     if(!course) return;
+    const timeParts = parseCourseTime(course.time || '');
     const dayCheckboxes = DAYS.map(d => {
         const isChecked = d !== course.day;
         return `<label style="margin-right:10px;display:inline-flex;align-items:center;gap:6px;">
@@ -2036,9 +2071,17 @@ function openCopyCourseModal(courseId){
     }).join('');
     let html=`<div class="modal-header"><h2>📋 Kurs Kopyala</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <div class="form-group"><label>Kaynak Kurs</label><div>${escapeHtml(course.name)} (${escapeHtml(course.day)} ${escapeHtml(course.time || '')})</div></div>
+    <div class="form-group"><label>Başlangıç Saati</label><input type="time" id="copyStartTime" value="${escapeAttr(timeParts.start)}"></div>
+    <div class="form-group"><label>Bitiş Saati</label><input type="time" id="copyEndTime" value="${escapeAttr(timeParts.end)}"></div>
     <div class="form-group"><label>Hedef Günler</label><div>${dayCheckboxes}</div></div>
     <button class="btn btn-primary" onclick="copyCourseDays(${course.id})">Kopyala</button>`;
     showModal(html);
+}
+function parseCourseTime(timeRange){
+    if(!timeRange) return {start:'', end:''};
+    const match = timeRange.match(/^\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*$/);
+    if(!match) return {start:'', end:''};
+    return {start: match[1], end: match[2]};
 }
 function applyCourseTemplate(){
     const templateId = document.getElementById('cTemplate')?.value;
@@ -2080,15 +2123,40 @@ async function copyCourseDays(courseId){
         alert('Lütfen en az bir gün seçiniz.');
         return;
     }
+    const startInput = document.getElementById('copyStartTime')?.value || '';
+    const endInput = document.getElementById('copyEndTime')?.value || '';
+    let timeRange = course.time || '';
+    if (startInput || endInput) {
+        if (!startInput || !endInput) {
+            alert('Lütfen başlangıç ve bitiş saatini birlikte giriniz.');
+            return;
+        }
+        timeRange = `${startInput}-${endInput}`;
+    }
     const startDate = course.startDate ?? course.start_date ?? '';
     const endDate = course.endDate ?? course.end_date ?? '';
+    const conflictCheck = await apiCall('check_copy_course_conflicts', {
+        days: selectedDays,
+        time: timeRange,
+        building: course.building || '',
+        classroom: course.classroom || '',
+        teacherId: course.teacherId || '',
+        startDate,
+        endDate
+    });
+    if (!conflictCheck || conflictCheck.status !== 'success') {
+        if (conflictCheck && conflictCheck.message) {
+            alert(conflictCheck.message);
+        }
+        return;
+    }
     for (const day of selectedDays) {
         const newCourse = {
             id: 'new',
             name: course.name || '',
             color: course.color || '#e3f2fd',
             day,
-            time: course.time || '',
+            time: timeRange,
             building: course.building || '',
             classroom: course.classroom || '',
             teacherId: course.teacherId || '',
