@@ -1347,6 +1347,7 @@ let currentViewDate=new Date();
 let viewMode = 'week'; 
 let currentBuildingFilter = localStorage.getItem('lastBuilding') || "";
 let currentCustomRange = {start: '', end: ''};
+let studentCourseFilterGroups = new Map();
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -2290,12 +2291,15 @@ function showStudents(){
         availableCourses = data.courses.filter(c => c.teacherId == currentUser.id);
     }
 
+    const courseFilterGroups = buildStudentCourseFilterGroups(availableCourses, data.students);
+    studentCourseFilterGroups = new Map(courseFilterGroups.map(group => [group.key, group.courseIds]));
+
     let html=`<div class="card"><h2>👨‍🎓 Öğrenci Yönetimi</h2>
     <button class="btn btn-primary" onclick="openStudentModal()">+ Yeni Öğrenci</button>
     <div class="form-group" style="margin-top:15px"><label>Kurs Filtrele</label>
     <select id="studentFilter" onchange="filterStudents()">
         <option value="">Tümü</option>
-        ${availableCourses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('')}
+        ${courseFilterGroups.map(group=>`<option value="${escapeAttr(group.key)}">${escapeHtml(group.name)}</option>`).join('')}
     </select></div>
     <div class="table-responsive"><table style="margin-top:15px"><tr><th>Ad</th><th>Soyad</th><th>Veli</th><th>Telefon</th><th>Kurslar</th><th>İşlem</th></tr>`;
     
@@ -2322,8 +2326,43 @@ function showStudents(){
 function filterStudents(){
     const v=document.getElementById('studentFilter').value;
     document.querySelectorAll('tr[data-courses]').forEach(r=>{
-        if(!v) r.style.display=''; else { const studentCourses = r.dataset.courses.split(','); r.style.display = studentCourses.includes(v) ? '' : 'none'; }
+        if(!v) {
+            r.style.display='';
+            return;
+        }
+        const studentCourses = r.dataset.courses ? r.dataset.courses.split(',') : [];
+        const groupCourseIds = studentCourseFilterGroups.get(v) || [];
+        const matchesGroup = groupCourseIds.some(id => studentCourses.includes(String(id)));
+        r.style.display = matchesGroup ? '' : 'none';
     });
+}
+function buildStudentCourseFilterGroups(availableCourses, students) {
+    const studentIdsByCourse = new Map();
+    students.forEach(student => {
+        (student.courses || []).forEach(courseId => {
+            if (!studentIdsByCourse.has(courseId)) {
+                studentIdsByCourse.set(courseId, []);
+            }
+            studentIdsByCourse.get(courseId).push(student.id);
+        });
+    });
+
+    const groups = new Map();
+    availableCourses.forEach(course => {
+        const studentIds = (studentIdsByCourse.get(course.id) || []).slice().sort((a, b) => a - b);
+        const studentKey = studentIds.join(',');
+        const teacherKey = course.teacherId ?? '';
+        const periodKey = course.period_id ?? '';
+        const nameKey = course.name ?? '';
+        const key = `${nameKey}||${teacherKey}||${periodKey}||${studentKey}`;
+        if (!groups.has(key)) {
+            groups.set(key, {key, name: course.name, courseIds: [course.id]});
+        } else {
+            groups.get(key).courseIds.push(course.id);
+        }
+    });
+
+    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'tr'));
 }
 function openStudentModal(s){
     let html=`<div class="modal-header"><h2>${s?'✏️ Düzenle':'➕ Yeni Öğrenci'}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
