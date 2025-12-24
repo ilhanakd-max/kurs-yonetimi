@@ -1372,9 +1372,26 @@ if (isset($_GET['action'])) {
         $courseId = clean_int($data['courseId'] ?? null);
         $studentId = clean_int($data['studentId'] ?? null);
         $evaluationPeriod = clean_year_month($data['evaluationPeriod'] ?? null);
-        $score = clean_float($data['score'] ?? null);
-        if (!$courseId || !$studentId || !$evaluationPeriod || $score === null || $score < 0 || $score > 100) {
-            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        if (!$courseId || !$studentId || !$evaluationPeriod || $activePeriodId <= 0) {
+            json_response(['status' => 'error', 'message' => 'Gerekli bilgiler eksik'], 400);
+        }
+        $rawScore = $data['score'] ?? null;
+        if (is_string($rawScore)) {
+            $rawScore = trim($rawScore);
+        } elseif (is_numeric($rawScore)) {
+            $rawScore = (string)$rawScore;
+        } else {
+            $rawScore = '';
+        }
+        if ($rawScore === '') {
+            json_response(['status' => 'success', 'message' => 'Puan boş olduğu için kayıt yapılmadı']);
+        }
+        $score = clean_float($rawScore);
+        if ($score === null) {
+            json_response(['status' => 'success', 'message' => 'Geçersiz puan için kayıt yapılmadı']);
+        }
+        if ($score < 0 || $score > 100) {
+            json_response(['status' => 'error', 'message' => 'Puan aralığı geçersiz'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
         $stmt = $pdo->prepare("SELECT id FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
