@@ -35,9 +35,18 @@ function clean_int($value) {
     return filter_var($value, FILTER_VALIDATE_INT) !== false ? (int)$value : null;
 }
 
+function clean_float($value): ?float {
+    return filter_var($value, FILTER_VALIDATE_FLOAT) !== false ? (float)$value : null;
+}
+
 function clean_date($value) {
     $value = clean_string($value, 10);
     return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) ? $value : null;
+}
+
+function clean_year_month($value): ?string {
+    $value = clean_string($value, 7);
+    return preg_match('/^\d{4}-\d{2}$/', $value) ? $value : null;
 }
 
 function clean_email($value) {
@@ -232,6 +241,59 @@ function ensure_period_defaults(PDO $pdo, int $periodId, bool $seedStudents = fa
     }
 }
 
+function get_certificate_settings(PDO $pdo, array $meta = []): array {
+    $defaults = [
+        'institution_name' => $meta['title'] ?? 'Kurum Adı',
+        'logo_url' => '',
+        'certificate_text' => 'Bu belge, ilgili kursu başarıyla tamamladığını gösterir.',
+        'signature_primary_name' => '',
+        'signature_primary_title' => '',
+        'signature_secondary_name' => '',
+        'signature_secondary_title' => '',
+        'min_attendance' => 70,
+        'min_score' => 70,
+    ];
+    $stmt = $pdo->query("SELECT institution_name, logo_url, certificate_text, signature_primary_name, signature_primary_title, signature_secondary_name, signature_secondary_title, min_attendance, min_score FROM certificate_settings ORDER BY id DESC LIMIT 1");
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return $defaults;
+    }
+    foreach ($defaults as $key => $value) {
+        if (!isset($row[$key]) || $row[$key] === null || $row[$key] === '') {
+            $row[$key] = $value;
+        }
+    }
+    return $row;
+}
+
+function calculate_attendance_stats(PDO $pdo, int $courseId, int $studentId, int $periodId): array {
+    $stmt = $pdo->prepare("SELECT status, COUNT(*) AS total FROM attendance WHERE course_id=? AND student_id=? AND period_id=? GROUP BY status");
+    $stmt->execute([$courseId, $studentId, $periodId]);
+    $present = 0;
+    $excused = 0;
+    $total = 0;
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $status = normalize_attendance_status($row['status']);
+        $count = (int)$row['total'];
+        $total += $count;
+        if ($status === ATTENDANCE_STATUS_PRESENT) {
+            $present += $count;
+        } elseif ($status === ATTENDANCE_STATUS_EXCUSED) {
+            $excused += $count;
+        }
+    }
+    $attended = $present + $excused;
+    $rate = $total > 0 ? round(($attended / $total) * 100, 2) : 0;
+    return ['total' => $total, 'present' => $present, 'excused' => $excused, 'rate' => $rate];
+}
+
+function get_evaluation_average(PDO $pdo, int $courseId, int $studentId, int $periodId): ?float {
+    $stmt = $pdo->prepare("SELECT AVG(score) FROM teacher_evaluations WHERE course_id=? AND student_id=? AND period_id=?");
+    $stmt->execute([$courseId, $studentId, $periodId]);
+    $avg = $stmt->fetchColumn();
+    return $avg !== null ? (float)$avg : null;
+}
+
 function stream_database_backup(PDO $pdo, string $dbName) {
     $timestamp = date('Ymd_His');
     $fileName = 'backup_' . $dbName . '_' . $timestamp . '.sql';
@@ -298,6 +360,102 @@ if (isset($_GET['action'])) {
         $user = require_auth();
         require_admin($user);
         stream_database_backup($pdo, $db_name);
+    }
+    if ($action === 'download_certificate') {
+        $token = clean_string($_GET['token'] ?? '', 100);
+        if (!$token || !hash_equals($_SESSION['csrf_token'], $token)) {
+            http_response_code(400);
+            exit;
+        }
+        $user = require_auth();
+        require_admin($user);
+        $certificateId = clean_int($_GET['id'] ?? null);
+        if (!$certificateId) {
+            http_response_code(400);
+            exit;
+        }
+        $stmt = $pdo->prepare("SELECT certificate_payload FROM certificates WHERE id=?");
+        $stmt->execute([$certificateId]);
+        $payloadJson = $stmt->fetchColumn();
+        if (!$payloadJson) {
+            http_response_code(404);
+            exit;
+        }
+        $payload = json_decode($payloadJson, true);
+        if (!is_array($payload)) {
+            http_response_code(500);
+            exit;
+        }
+        $institutionName = clean_string($payload['institution_name'] ?? '', 150);
+        $studentName = clean_string($payload['student_name'] ?? '', 150);
+        $courseName = clean_string($payload['course_name'] ?? '', 150);
+        $periodName = clean_string($payload['period_name'] ?? '', 150);
+        $completionDate = clean_string($payload['completion_date'] ?? '', 20);
+        $teacherName = clean_string($payload['teacher_name'] ?? '', 150);
+        $certificateText = $payload['certificate_text'] ?? '';
+        $logoUrl = $payload['logo_url'] ?? '';
+        $signatures = $payload['signatures'] ?? [];
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8"><title>Sertifika</title>';
+        echo '<style>
+            @page { size: A4; margin: 20mm; }
+            body { font-family: "DejaVu Sans", Arial, sans-serif; color: #111; }
+            .certificate { border: 3px solid #222; padding: 30px; height: 100%; box-sizing: border-box; }
+            .certificate-header { text-align: center; margin-bottom: 30px; }
+            .certificate-header img { max-height: 80px; margin-bottom: 10px; }
+            .certificate-title { font-size: 28px; font-weight: bold; letter-spacing: 2px; }
+            .certificate-body { text-align: center; margin-top: 30px; font-size: 18px; line-height: 1.6; }
+            .certificate-body h2 { font-size: 24px; margin: 15px 0; }
+            .certificate-meta { margin-top: 30px; font-size: 16px; }
+            .certificate-footer { display: flex; justify-content: space-between; margin-top: 50px; }
+            .signature { text-align: center; min-width: 180px; }
+            .signature .line { margin-top: 40px; border-top: 1px solid #333; }
+            .print-actions { margin-top: 20px; text-align: center; }
+            @media print { .print-actions { display: none; } }
+        </style></head><body>';
+        echo '<div class="certificate">';
+        echo '<div class="certificate-header">';
+        if ($logoUrl) {
+            echo '<img src="' . htmlspecialchars($logoUrl, ENT_QUOTES, 'UTF-8') . '" alt="Logo">';
+        }
+        echo '<div class="certificate-title">SERTİFİKA</div>';
+        echo '<div style="margin-top:10px;font-size:18px;">' . htmlspecialchars($institutionName, ENT_QUOTES, 'UTF-8') . '</div>';
+        echo '</div>';
+        echo '<div class="certificate-body">';
+        echo '<p>Bu belge,</p>';
+        echo '<h2>' . htmlspecialchars($studentName, ENT_QUOTES, 'UTF-8') . '</h2>';
+        echo '<p><strong>' . htmlspecialchars($courseName, ENT_QUOTES, 'UTF-8') . '</strong> kursunu</p>';
+        echo '<p>' . htmlspecialchars($periodName, ENT_QUOTES, 'UTF-8') . ' döneminde başarıyla tamamladığını gösterir.</p>';
+        if ($certificateText) {
+            echo '<p>' . nl2br(htmlspecialchars($certificateText, ENT_QUOTES, 'UTF-8')) . '</p>';
+        }
+        echo '<div class="certificate-meta">';
+        echo '<div>Tamamlanma Tarihi: <strong>' . htmlspecialchars($completionDate, ENT_QUOTES, 'UTF-8') . '</strong></div>';
+        echo '<div>Öğretmen: <strong>' . htmlspecialchars($teacherName, ENT_QUOTES, 'UTF-8') . '</strong></div>';
+        echo '</div>';
+        echo '</div>';
+        echo '<div class="certificate-footer">';
+        $sigSlots = 0;
+        foreach ($signatures as $signature) {
+            $sigName = clean_string($signature['name'] ?? '', 150);
+            $sigTitle = clean_string($signature['title'] ?? '', 150);
+            if (!$sigName && !$sigTitle) {
+                continue;
+            }
+            $sigSlots++;
+            echo '<div class="signature">';
+            echo '<div class="line"></div>';
+            echo '<div>' . htmlspecialchars($sigName, ENT_QUOTES, 'UTF-8') . '</div>';
+            echo '<div style="font-size:14px;color:#555;">' . htmlspecialchars($sigTitle, ENT_QUOTES, 'UTF-8') . '</div>';
+            echo '</div>';
+        }
+        if ($sigSlots === 0) {
+            echo '<div class="signature"><div class="line"></div><div>&nbsp;</div></div>';
+        }
+        echo '</div></div>';
+        echo '<div class="print-actions"><button onclick="window.print()">🖨️ Yazdır / PDF</button></div>';
+        echo '</body></html>';
+        exit;
     }
     header('Content-Type: application/json');
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -481,6 +639,7 @@ if (isset($_GET['action'])) {
         $stmt = $pdo->query("SELECT * FROM meta_data");
         $meta = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
         $response['settings'] = ['title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü'];
+        $response['certificateSettings'] = get_certificate_settings($pdo, $meta);
         $response['buildings'] = json_decode($meta['buildings'] ?? '[]');
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
         $response['activePeriod'] = $activePeriod;
@@ -643,6 +802,8 @@ if (isset($_GET['action'])) {
         $pdo->prepare("DELETE FROM courses WHERE id=? AND period_id=?")->execute([$id, $activePeriodId]);
         $pdo->prepare("DELETE FROM student_courses WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
         $pdo->prepare("DELETE FROM attendance WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
+        $pdo->prepare("DELETE FROM teacher_evaluations WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
+        $pdo->prepare("DELETE FROM certificates WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -715,6 +876,8 @@ if (isset($_GET['action'])) {
         $pdo->prepare("DELETE FROM student_courses WHERE student_id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM attendance WHERE student_id=?")->execute([$id]);
         $pdo->prepare("DELETE FROM student_periods WHERE student_id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM teacher_evaluations WHERE student_id=?")->execute([$id]);
+        $pdo->prepare("DELETE FROM certificates WHERE student_id=?")->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -933,20 +1096,28 @@ if (isset($_GET['action'])) {
             $pdo->beginTransaction();
             if ($type === 'attendance') {
                 $pdo->prepare("DELETE FROM attendance WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM teacher_evaluations WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM certificates WHERE period_id=?")->execute([$activePeriodId]);
             } elseif ($type === 'courses') {
                 $pdo->prepare("DELETE FROM attendance WHERE period_id=?")->execute([$activePeriodId]);
                 $pdo->prepare("DELETE FROM student_courses WHERE period_id=?")->execute([$activePeriodId]);
                 $pdo->prepare("DELETE FROM courses WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM teacher_evaluations WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM certificates WHERE period_id=?")->execute([$activePeriodId]);
             } elseif ($type === 'student_registrations') {
                 $pdo->prepare("DELETE FROM attendance WHERE period_id=?")->execute([$activePeriodId]);
                 $pdo->prepare("DELETE FROM student_courses WHERE period_id=?")->execute([$activePeriodId]);
                 $pdo->prepare("DELETE FROM student_periods WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM teacher_evaluations WHERE period_id=?")->execute([$activePeriodId]);
+                $pdo->prepare("DELETE FROM certificates WHERE period_id=?")->execute([$activePeriodId]);
             } elseif ($type === 'all') {
                 $pdo->prepare("DELETE FROM attendance")->execute();
                 $pdo->prepare("DELETE FROM student_courses")->execute();
                 $pdo->prepare("DELETE FROM courses")->execute();
                 $pdo->prepare("DELETE FROM student_periods")->execute();
                 $pdo->prepare("DELETE FROM students")->execute();
+                $pdo->prepare("DELETE FROM teacher_evaluations")->execute();
+                $pdo->prepare("DELETE FROM certificates")->execute();
             }
             $pdo->commit();
         } catch (Throwable $e) {
@@ -1104,6 +1275,8 @@ if (isset($_GET['action'])) {
             $pdo->beginTransaction();
             $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
             $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $pdo->prepare("DELETE FROM teacher_evaluations WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $pdo->prepare("DELETE FROM certificates WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -1124,6 +1297,220 @@ if (isset($_GET['action'])) {
         $v = is_array($value) ? json_encode($value) : clean_string((string)$value, 500);
         $pdo->prepare("REPLACE INTO meta_data (item_key, item_value) VALUES (?, ?)")->execute([$k, $v]);
         echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'save_certificate_settings') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $institutionName = clean_string($data['institution_name'] ?? '', 150);
+        $logoUrl = clean_string($data['logo_url'] ?? '', 500);
+        $certificateText = clean_string($data['certificate_text'] ?? '', 2000);
+        $signaturePrimaryName = clean_string($data['signature_primary_name'] ?? '', 150);
+        $signaturePrimaryTitle = clean_string($data['signature_primary_title'] ?? '', 150);
+        $signatureSecondaryName = clean_string($data['signature_secondary_name'] ?? '', 150);
+        $signatureSecondaryTitle = clean_string($data['signature_secondary_title'] ?? '', 150);
+        $minAttendance = clean_float($data['min_attendance'] ?? null);
+        $minScore = clean_float($data['min_score'] ?? null);
+        if ($minAttendance === null || $minScore === null || $minAttendance < 0 || $minAttendance > 100 || $minScore < 0 || $minScore > 100) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz kriter değerleri'], 400);
+        }
+        $stmt = $pdo->query("SELECT id FROM certificate_settings ORDER BY id DESC LIMIT 1");
+        $existingId = $stmt->fetchColumn();
+        if ($existingId) {
+            $pdo->prepare("UPDATE certificate_settings SET institution_name=?, logo_url=?, certificate_text=?, signature_primary_name=?, signature_primary_title=?, signature_secondary_name=?, signature_secondary_title=?, min_attendance=?, min_score=? WHERE id=?")
+                ->execute([
+                    $institutionName,
+                    $logoUrl,
+                    $certificateText,
+                    $signaturePrimaryName,
+                    $signaturePrimaryTitle,
+                    $signatureSecondaryName,
+                    $signatureSecondaryTitle,
+                    $minAttendance,
+                    $minScore,
+                    $existingId
+                ]);
+        } else {
+            $pdo->prepare("INSERT INTO certificate_settings (institution_name, logo_url, certificate_text, signature_primary_name, signature_primary_title, signature_secondary_name, signature_secondary_title, min_attendance, min_score) VALUES (?,?,?,?,?,?,?,?,?)")
+                ->execute([
+                    $institutionName,
+                    $logoUrl,
+                    $certificateText,
+                    $signaturePrimaryName,
+                    $signaturePrimaryTitle,
+                    $signatureSecondaryName,
+                    $signatureSecondaryTitle,
+                    $minAttendance,
+                    $minScore
+                ]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'get_evaluations') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        $evaluationPeriod = clean_year_month($data['evaluationPeriod'] ?? null);
+        if (!$courseId || !$evaluationPeriod) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $stmt = $pdo->prepare("SELECT student_id, score FROM teacher_evaluations WHERE course_id=? AND period_id=? AND evaluation_period=?");
+        $stmt->execute([$courseId, $activePeriodId, $evaluationPeriod]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode(['status' => 'success', 'evaluations' => $rows]); exit;
+    }
+
+    if ($action === 'save_evaluation') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        $studentId = clean_int($data['studentId'] ?? null);
+        $evaluationPeriod = clean_year_month($data['evaluationPeriod'] ?? null);
+        $score = clean_float($data['score'] ?? null);
+        if (!$courseId || !$studentId || !$evaluationPeriod || $score === null || $score < 0 || $score > 100) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $stmt = $pdo->prepare("SELECT id FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
+        $stmt->execute([$studentId, $courseId, $activePeriodId]);
+        if (!$stmt->fetchColumn()) {
+            json_response(['status' => 'error', 'message' => 'Öğrenci kursa kayıtlı değil'], 400);
+        }
+        $teacherId = $user['role'] === 'teacher' ? (int)($user['id'] ?? 0) : null;
+        if (!$teacherId) {
+            $courseStmt = $pdo->prepare("SELECT teacher_id FROM courses WHERE id=? AND period_id=?");
+            $courseStmt->execute([$courseId, $activePeriodId]);
+            $teacherId = (int)($courseStmt->fetchColumn() ?: 0);
+        }
+        $existing = $pdo->prepare("SELECT id FROM teacher_evaluations WHERE course_id=? AND student_id=? AND period_id=? AND evaluation_period=?");
+        $existing->execute([$courseId, $studentId, $activePeriodId, $evaluationPeriod]);
+        $existingId = $existing->fetchColumn();
+        if ($existingId) {
+            $pdo->prepare("UPDATE teacher_evaluations SET score=?, teacher_id=? WHERE id=?")->execute([$score, $teacherId ?: null, $existingId]);
+        } else {
+            $pdo->prepare("INSERT INTO teacher_evaluations (course_id, student_id, period_id, evaluation_period, score, teacher_id) VALUES (?,?,?,?,?,?)")
+                ->execute([$courseId, $studentId, $activePeriodId, $evaluationPeriod, $score, $teacherId ?: null]);
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'get_certificates') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $courseId = clean_int($data['courseId'] ?? null);
+        if (!$courseId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $stmt = $pdo->prepare("SELECT c.id, c.student_id, c.issued_at, c.completion_date, s.name, s.surname FROM certificates c INNER JOIN students s ON s.id=c.student_id WHERE c.course_id=? AND c.period_id=? ORDER BY s.name, s.surname");
+        $stmt->execute([$courseId, $activePeriodId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode(['status' => 'success', 'certificates' => $rows]); exit;
+    }
+
+    if ($action === 'generate_certificates') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $courseId = clean_int($data['courseId'] ?? null);
+        $studentId = clean_int($data['studentId'] ?? null);
+        $force = !empty($data['force']) ? true : false;
+        if (!$courseId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $courseStmt = $pdo->prepare("SELECT c.name, c.teacher_id, p.name AS period_name FROM courses c INNER JOIN course_periods p ON p.id=c.period_id WHERE c.id=? AND c.period_id=?");
+        $courseStmt->execute([$courseId, $activePeriodId]);
+        $course = $courseStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$course) {
+            json_response(['status' => 'error', 'message' => 'Kurs bulunamadı'], 404);
+        }
+        $teacherName = '';
+        if (!empty($course['teacher_id'])) {
+            $teacherStmt = $pdo->prepare("SELECT name FROM teachers WHERE id=?");
+            $teacherStmt->execute([$course['teacher_id']]);
+            $teacherName = (string)$teacherStmt->fetchColumn();
+        }
+        $meta = $pdo->query("SELECT * FROM meta_data")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $certSettings = get_certificate_settings($pdo, $meta);
+        $studentsQuery = "SELECT s.id, s.name, s.surname FROM students s INNER JOIN student_courses sc ON sc.student_id=s.id WHERE sc.course_id=? AND sc.period_id=?";
+        $params = [$courseId, $activePeriodId];
+        if ($studentId) {
+            $studentsQuery .= " AND s.id=?";
+            $params[] = $studentId;
+        }
+        $stmt = $pdo->prepare($studentsQuery);
+        $stmt->execute($params);
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$students) {
+            json_response(['status' => 'error', 'message' => 'Öğrenci bulunamadı'], 404);
+        }
+        $minAttendance = (float)$certSettings['min_attendance'];
+        $minScore = (float)$certSettings['min_score'];
+        $generated = 0;
+        $skippedExisting = 0;
+        $skippedIneligible = 0;
+        $completionDate = date('Y-m-d');
+        foreach ($students as $student) {
+            $studentIdInt = (int)$student['id'];
+            $attendanceStats = calculate_attendance_stats($pdo, $courseId, $studentIdInt, $activePeriodId);
+            $evaluationAvg = get_evaluation_average($pdo, $courseId, $studentIdInt, $activePeriodId);
+            $eligible = $attendanceStats['total'] > 0
+                && $attendanceStats['rate'] >= $minAttendance
+                && $evaluationAvg !== null
+                && $evaluationAvg >= $minScore;
+            if (!$eligible) {
+                $skippedIneligible++;
+                continue;
+            }
+            $payload = [
+                'institution_name' => $certSettings['institution_name'],
+                'logo_url' => $certSettings['logo_url'],
+                'certificate_text' => $certSettings['certificate_text'],
+                'student_name' => trim($student['name'] . ' ' . $student['surname']),
+                'course_name' => $course['name'],
+                'period_name' => $course['period_name'] ?? '',
+                'completion_date' => $completionDate,
+                'teacher_name' => $teacherName,
+                'signatures' => [
+                    ['name' => $certSettings['signature_primary_name'], 'title' => $certSettings['signature_primary_title']],
+                    ['name' => $certSettings['signature_secondary_name'], 'title' => $certSettings['signature_secondary_title']],
+                ],
+                'attendance_rate' => $attendanceStats['rate'],
+                'evaluation_average' => $evaluationAvg
+            ];
+            $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);
+            $existingStmt = $pdo->prepare("SELECT id FROM certificates WHERE student_id=? AND course_id=? AND period_id=?");
+            $existingStmt->execute([$studentIdInt, $courseId, $activePeriodId]);
+            $existingId = $existingStmt->fetchColumn();
+            if ($existingId) {
+                if ($force) {
+                    $pdo->prepare("UPDATE certificates SET completion_date=?, certificate_payload=?, created_by=? WHERE id=?")
+                        ->execute([$completionDate, $payloadJson, $user['id'] ?? null, $existingId]);
+                    $generated++;
+                } else {
+                    $skippedExisting++;
+                }
+            } else {
+                $pdo->prepare("INSERT INTO certificates (student_id, course_id, period_id, completion_date, certificate_payload, created_by) VALUES (?,?,?,?,?,?)")
+                    ->execute([$studentIdInt, $courseId, $activePeriodId, $completionDate, $payloadJson, $user['id'] ?? null]);
+                $generated++;
+            }
+        }
+        echo json_encode([
+            'status' => 'success',
+            'generated' => $generated,
+            'skipped_existing' => $skippedExisting,
+            'skipped_ineligible' => $skippedIneligible
+        ]);
+        exit;
     }
 
     if ($action === 'save_announcement') {
@@ -1339,7 +1726,7 @@ const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
 ];
 
-let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null};
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},certificateSettings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null};
 let reportData=null;
 let reportPeriodId=null;
 let currentUser=null;
@@ -1424,6 +1811,7 @@ async function refreshData(options = {}) {
         if (data.attendance && Array.isArray(data.attendance)) {
             data.attendance = data.attendance.map(a => ({...a, status: Number(a.status)}));
         }
+        if(!data.certificateSettings) data.certificateSettings = {};
         data.attendanceRange = res.attendanceRange || range;
         reportData = null;
         reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
@@ -2458,6 +2846,10 @@ function showReports(){
         periodSelect = `<div class="form-group"><label>Kurs Dönemi</label><select id="rPeriod" onchange="changeReportPeriod(this.value)">${data.periods.map(p=>`<option value="${escapeAttr(p.id)}" ${currentPeriodId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select></div>`;
     }
 
+    let evaluationButton = '';
+    if(isTeacher || isAdmin) {
+        evaluationButton = `<div style="margin-top:10px"><button class="btn btn-info" onclick="openEvaluationModal()">📝 Değerlendirme Girişi</button></div>`;
+    }
     let html=`<div class="card"><h2>📊 Raporlar</h2>
     <div class="stats"><div class="stat-card"><h3>${source.courses.length}</h3><p>Toplam Kurs</p></div>
     <div class="stat-card"><h3>${data.teachers.length}</h3><p>Öğretmen</p></div>
@@ -2474,6 +2866,7 @@ function showReports(){
     <div class="form-group"><label>Başlangıç</label><input type="date" id="rStart"></div>
     <div class="form-group"><label>Bitiş</label><input type="date" id="rEnd"></div>
     <div class="form-group" style="align-self: flex-end;"><button class="btn btn-primary" style="width:100%" onclick="generateReport()">Rapor Oluştur</button></div></div>
+    ${evaluationButton}
     <div id="reportResult"></div></div>`;
     document.getElementById('mainContent').innerHTML=html;
 }
@@ -2542,6 +2935,75 @@ function generateReport(){
     <button class="btn btn-secondary" onclick="printReport()">🖨️ Yazdır</button>
     </div>`;
     document.getElementById('reportResult').innerHTML=html;
+}
+
+function openEvaluationModal(){
+    const isTeacher = currentUser.role === 'teacher';
+    let availableCourses = data.courses || [];
+    if(isTeacher) {
+        availableCourses = availableCourses.filter(c => c.teacherId == currentUser.id);
+    }
+    if(availableCourses.length === 0) {
+        return alert('Değerlendirme yapılacak kurs bulunamadı.');
+    }
+    const currentMonth = new Date().toISOString().slice(0,7);
+    let html=`<div class="modal-header"><h2>📝 Öğretmen Değerlendirmesi</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    <div class="form-group"><label>Kurs</label><select id="evalCourse" onchange="loadEvaluationEntries()">${availableCourses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Değerlendirme Dönemi</label><input type="month" id="evalPeriod" value="${escapeAttr(currentMonth)}" onchange="loadEvaluationEntries()"></div>
+    <div id="evaluationMessage" style="margin:10px 0;color:#0062cc;"></div>
+    <div id="evaluationList"></div>`;
+    showModal(html);
+    loadEvaluationEntries();
+}
+
+async function loadEvaluationEntries(){
+    const courseId = document.getElementById('evalCourse')?.value;
+    const evaluationPeriod = document.getElementById('evalPeriod')?.value;
+    if(!courseId || !evaluationPeriod) {
+        document.getElementById('evaluationList').innerHTML = '<p>Değerlendirme dönemi seçin.</p>';
+        return;
+    }
+    const courseIdNum = Number(courseId);
+    const students = (data.students || []).filter(s => Array.isArray(s.courses) && s.courses.some(cid => Number(cid) === courseIdNum));
+    if(students.length === 0) {
+        document.getElementById('evaluationList').innerHTML = '<p>Bu kurs için kayıtlı öğrenci bulunamadı.</p>';
+        return;
+    }
+    const res = await apiCall('get_evaluations', {courseId, evaluationPeriod});
+    const evaluationMap = {};
+    if(res && res.status === 'success') {
+        (res.evaluations || []).forEach(e => {
+            evaluationMap[e.student_id] = e.score;
+        });
+    }
+    let html = `<div class="table-responsive"><table><tr><th>Öğrenci</th><th>Puan</th><th>İşlem</th></tr>`;
+    students.forEach(s => {
+        const existingScore = evaluationMap[s.id] ?? '';
+        html += `<tr>
+            <td>${escapeHtml(s.name)} ${escapeHtml(s.surname)}</td>
+            <td><input type="number" min="0" max="100" step="0.01" id="evalScore_${escapeAttr(s.id)}" value="${escapeAttr(existingScore)}" style="width:120px"></td>
+            <td><button class="btn btn-primary btn-sm" onclick="saveEvaluation(${s.id})">Kaydet</button></td>
+        </tr>`;
+    });
+    html += `</table></div>`;
+    document.getElementById('evaluationList').innerHTML = html;
+}
+
+async function saveEvaluation(studentId){
+    const courseId = document.getElementById('evalCourse')?.value;
+    const evaluationPeriod = document.getElementById('evalPeriod')?.value;
+    const scoreInput = document.getElementById(`evalScore_${studentId}`);
+    const score = scoreInput ? scoreInput.value : '';
+    if(!courseId || !evaluationPeriod) {
+        return alert('Kurs ve dönem seçin.');
+    }
+    const res = await apiCall('save_evaluation', {courseId, studentId, evaluationPeriod, score});
+    const message = document.getElementById('evaluationMessage');
+    if(res && res.status === 'success') {
+        if(message) message.textContent = 'Değerlendirme kaydedildi.';
+    } else {
+        if(message) message.textContent = res ? res.message : 'Kayıt başarısız.';
+    }
 }
 
 // --- YÖNETİM ---
@@ -2632,7 +3094,29 @@ function showAdminTab(idx){
             <div class="form-group"><button class="btn btn-danger" onclick="confirmReset('all')">Her Şeyi Sıfırla</button></div>
         </div>`;
     }else{
+        const certSettings = data.certificateSettings || {};
         html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
+        <hr style="margin:20px 0"><h3>Sertifika Ayarları</h3>
+        <div class="form-group"><label>Kurum Adı (Sertifika)</label><input type="text" id="certInstitution" value="${escapeAttr(certSettings.institution_name || data.settings.title || '')}"></div>
+        <div class="form-group"><label>Logo URL</label><input type="text" id="certLogo" value="${escapeAttr(certSettings.logo_url || '')}" placeholder="https://..."></div>
+        <div class="form-group"><label>Sertifika Metni</label><textarea id="certText" rows="3">${escapeHtml(certSettings.certificate_text || '')}</textarea></div>
+        <div class="form-group"><label>Minimum Devam Yüzdesi</label><input type="number" id="certMinAttendance" min="0" max="100" step="0.01" value="${escapeAttr(certSettings.min_attendance ?? 70)}"></div>
+        <div class="form-group"><label>Minimum Değerlendirme Puanı</label><input type="number" id="certMinScore" min="0" max="100" step="0.01" value="${escapeAttr(certSettings.min_score ?? 70)}"></div>
+        <div class="form-group"><label>İmza 1 - Ad Soyad</label><input type="text" id="certSigName1" value="${escapeAttr(certSettings.signature_primary_name || '')}"></div>
+        <div class="form-group"><label>İmza 1 - Ünvan</label><input type="text" id="certSigTitle1" value="${escapeAttr(certSettings.signature_primary_title || '')}"></div>
+        <div class="form-group"><label>İmza 2 - Ad Soyad</label><input type="text" id="certSigName2" value="${escapeAttr(certSettings.signature_secondary_name || '')}"></div>
+        <div class="form-group"><label>İmza 2 - Ünvan</label><input type="text" id="certSigTitle2" value="${escapeAttr(certSettings.signature_secondary_title || '')}"></div>
+        <button class="btn btn-primary" onclick="saveCertificateSettings()">Sertifika Ayarlarını Kaydet</button>
+        <hr style="margin:20px 0"><h3>Sertifika Üretimi</h3>
+        <div class="form-group"><label>Kurs</label><select id="certCourse" onchange="loadCertificateStudents()"><option value="">Kurs seçin</option>${data.courses.map(c=>`<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Öğrenci (opsiyonel)</label><select id="certStudent"><option value="">Tümü</option></select></div>
+        <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+            <input type="checkbox" id="certForce" style="width:auto;margin:0;">
+            <label for="certForce" style="margin:0;font-weight:normal;">Mevcut sertifikaları yeniden üret</label>
+        </div>
+        <button class="btn btn-success" onclick="generateCertificates()">Sertifika Oluştur</button>
+        <button class="btn btn-info" style="margin-left:10px" onclick="loadCertificatesList()">Sertifikaları Listele</button>
+        <div id="certificateResult" style="margin-top:15px;"></div>
         <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
     }
     document.getElementById('adminContent').innerHTML=html;
@@ -2749,6 +3233,81 @@ async function deleteAnnouncement(id){
     }
 }
 async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
+async function saveCertificateSettings(){
+    const payload = {
+        institution_name: document.getElementById('certInstitution').value,
+        logo_url: document.getElementById('certLogo').value,
+        certificate_text: document.getElementById('certText').value,
+        min_attendance: document.getElementById('certMinAttendance').value,
+        min_score: document.getElementById('certMinScore').value,
+        signature_primary_name: document.getElementById('certSigName1').value,
+        signature_primary_title: document.getElementById('certSigTitle1').value,
+        signature_secondary_name: document.getElementById('certSigName2').value,
+        signature_secondary_title: document.getElementById('certSigTitle2').value
+    };
+    const res = await apiCall('save_certificate_settings', payload);
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        showAdminTab(6);
+        alert('Sertifika ayarları kaydedildi!');
+    } else {
+        alert(res ? res.message : 'Kayıt başarısız');
+    }
+}
+function loadCertificateStudents(){
+    const courseId = document.getElementById('certCourse')?.value;
+    const studentSelect = document.getElementById('certStudent');
+    if(!studentSelect) return;
+    if(!courseId) {
+        studentSelect.innerHTML = '<option value="">Tümü</option>';
+        return;
+    }
+    const courseIdNum = Number(courseId);
+    const students = (data.students || []).filter(s => Array.isArray(s.courses) && s.courses.some(cid => Number(cid) === courseIdNum));
+    let options = '<option value="">Tümü</option>';
+    students.forEach(s => {
+        options += `<option value="${escapeAttr(s.id)}">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</option>`;
+    });
+    studentSelect.innerHTML = options;
+}
+async function generateCertificates(){
+    const courseId = document.getElementById('certCourse')?.value;
+    const studentId = document.getElementById('certStudent')?.value;
+    const force = document.getElementById('certForce')?.checked;
+    if(!courseId) return alert('Kurs seçin.');
+    const res = await apiCall('generate_certificates', {courseId, studentId: studentId || null, force: force ? 1 : 0});
+    const resultBox = document.getElementById('certificateResult');
+    if(res && res.status === 'success') {
+        resultBox.innerHTML = `<p>Oluşturulan: <strong>${res.generated}</strong> | Mevcut: <strong>${res.skipped_existing}</strong> | Uygun değil: <strong>${res.skipped_ineligible}</strong></p>`;
+        await loadCertificatesList();
+    } else {
+        resultBox.innerHTML = `<p>${res ? res.message : 'İşlem başarısız'}</p>`;
+    }
+}
+async function loadCertificatesList(){
+    const courseId = document.getElementById('certCourse')?.value;
+    if(!courseId) return;
+    const res = await apiCall('get_certificates', {courseId});
+    const resultBox = document.getElementById('certificateResult');
+    if(res && res.status === 'success') {
+        const certs = res.certificates || [];
+        if(certs.length === 0) {
+            resultBox.innerHTML = '<p>Sertifika bulunamadı.</p>';
+            return;
+        }
+        let html = `<div class="table-responsive"><table><tr><th>Öğrenci</th><th>Tarih</th><th>İşlem</th></tr>`;
+        certs.forEach(c => {
+            const studentName = `${escapeHtml(c.name)} ${escapeHtml(c.surname)}`;
+            const dateText = escapeHtml(c.completion_date || c.issued_at || '');
+            const link = `?action=download_certificate&id=${encodeURIComponent(c.id)}&token=${encodeURIComponent(CSRF_TOKEN)}`;
+            html += `<tr><td>${studentName}</td><td>${dateText}</td><td><a class="btn btn-secondary btn-sm" href="${link}" target="_blank">PDF / Yazdır</a></td></tr>`;
+        });
+        html += `</table></div>`;
+        resultBox.innerHTML = html;
+    } else {
+        resultBox.innerHTML = `<p>${res ? res.message : 'Liste alınamadı'}</p>`;
+    }
+}
 function downloadDatabaseBackup(){window.location.href='?action=download_backup&token='+encodeURIComponent(CSRF_TOKEN);}
 
 // MODAL & EXPORT

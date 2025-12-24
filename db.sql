@@ -188,6 +188,62 @@ CREATE TABLE `meta_data` (
   `item_value` text NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- --------------------------------------------------------
+
+--
+-- Tablo için tablo yapısı `certificate_settings`
+--
+
+CREATE TABLE `certificate_settings` (
+  `id` int(11) NOT NULL,
+  `institution_name` varchar(150) NOT NULL,
+  `logo_url` varchar(500) DEFAULT NULL,
+  `certificate_text` text DEFAULT NULL,
+  `signature_primary_name` varchar(150) DEFAULT NULL,
+  `signature_primary_title` varchar(150) DEFAULT NULL,
+  `signature_secondary_name` varchar(150) DEFAULT NULL,
+  `signature_secondary_title` varchar(150) DEFAULT NULL,
+  `min_attendance` decimal(5,2) NOT NULL DEFAULT 70.00,
+  `min_score` decimal(5,2) NOT NULL DEFAULT 70.00,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Tablo için tablo yapısı `teacher_evaluations`
+--
+
+CREATE TABLE `teacher_evaluations` (
+  `id` int(11) NOT NULL,
+  `course_id` int(11) NOT NULL,
+  `student_id` int(11) NOT NULL,
+  `period_id` int(11) NOT NULL,
+  `evaluation_period` varchar(20) NOT NULL,
+  `score` decimal(5,2) NOT NULL,
+  `teacher_id` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Tablo için tablo yapısı `certificates`
+--
+
+CREATE TABLE `certificates` (
+  `id` int(11) NOT NULL,
+  `student_id` int(11) NOT NULL,
+  `course_id` int(11) NOT NULL,
+  `period_id` int(11) NOT NULL,
+  `issued_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `completion_date` date NOT NULL,
+  `certificate_payload` text NOT NULL,
+  `created_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 --
 -- Tablo döküm verisi `meta_data`
 --
@@ -782,6 +838,30 @@ ALTER TABLE `meta_data`
   ADD PRIMARY KEY (`item_key`);
 
 --
+-- Tablo için indeksler `certificate_settings`
+--
+ALTER TABLE `certificate_settings`
+  ADD PRIMARY KEY (`id`);
+
+--
+-- Tablo için indeksler `teacher_evaluations`
+--
+ALTER TABLE `teacher_evaluations`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_teacher_eval` (`course_id`,`student_id`,`period_id`,`evaluation_period`),
+  ADD KEY `idx_teacher_eval_period` (`period_id`),
+  ADD KEY `idx_teacher_eval_course` (`course_id`);
+
+--
+-- Tablo için indeksler `certificates`
+--
+ALTER TABLE `certificates`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_certificates` (`student_id`,`course_id`,`period_id`),
+  ADD KEY `idx_certificates_course` (`course_id`),
+  ADD KEY `idx_certificates_period` (`period_id`);
+
+--
 -- Tablo için indeksler `students`
 --
 ALTER TABLE `students`
@@ -846,6 +926,24 @@ ALTER TABLE `course_periods`
 --
 ALTER TABLE `holidays`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=43;
+
+--
+-- Tablo için AUTO_INCREMENT değeri `certificate_settings`
+--
+ALTER TABLE `certificate_settings`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
+-- Tablo için AUTO_INCREMENT değeri `teacher_evaluations`
+--
+ALTER TABLE `teacher_evaluations`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
+-- Tablo için AUTO_INCREMENT değeri `certificates`
+--
+ALTER TABLE `certificates`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
 -- Tablo için AUTO_INCREMENT değeri `students`
