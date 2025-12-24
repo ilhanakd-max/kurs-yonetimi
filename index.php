@@ -277,7 +277,7 @@ function stream_database_backup(PDO $pdo, string $dbName) {
 $db_host = 'sql211.infinityfree.com';
 $db_name = 'if0_40197167_test';
 $db_user = 'if0_40197167';
-$db_pass = 'Aeg151851'; // PANEL ŞİFRENİZ
+$db_pass = 'TEST'; // PANEL ŞİFRENİZ
 
 try {
     $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
