@@ -480,13 +480,36 @@ if (isset($_GET['action'])) {
 
         $stmt = $pdo->query("SELECT * FROM meta_data");
         $meta = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
-        $absenceThreshold = isset($meta['absence_threshold']) ? (int)$meta['absence_threshold'] : 30;
-        if ($absenceThreshold <= 0 || $absenceThreshold > 100) {
-            $absenceThreshold = 30;
+        $dashboardEnabled = isset($meta['dashboard_enabled']) ? (int)$meta['dashboard_enabled'] : 1;
+        $dashboardEnabled = $dashboardEnabled === 1 ? 1 : 0;
+        $absenceHighSource = $meta['absence_threshold_high'] ?? ($meta['absence_threshold'] ?? null);
+        $absenceHigh = is_numeric($absenceHighSource) ? (int)$absenceHighSource : 40;
+        if ($absenceHigh <= 0 || $absenceHigh > 100) {
+            $absenceHigh = 40;
+        }
+        $absenceMediumSource = $meta['absence_threshold_medium'] ?? null;
+        $absenceMedium = is_numeric($absenceMediumSource) ? (int)$absenceMediumSource : max(1, min(100, $absenceHigh - 10));
+        if ($absenceMedium <= 0 || $absenceMedium > 100) {
+            $absenceMedium = max(1, min(100, $absenceHigh - 10));
+        }
+        $absenceLowSource = $meta['absence_threshold_low'] ?? null;
+        $absenceLow = is_numeric($absenceLowSource) ? (int)$absenceLowSource : max(1, min(100, $absenceMedium - 10));
+        if ($absenceLow <= 0 || $absenceLow > 100) {
+            $absenceLow = max(1, min(100, $absenceMedium - 10));
+        }
+        if ($absenceLow > $absenceMedium) {
+            $absenceLow = $absenceMedium;
+        }
+        if ($absenceMedium > $absenceHigh) {
+            $absenceMedium = $absenceHigh;
         }
         $response['settings'] = [
             'title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü',
-            'absence_threshold' => $absenceThreshold
+            'absence_threshold' => $absenceHigh,
+            'absence_threshold_low' => $absenceLow,
+            'absence_threshold_medium' => $absenceMedium,
+            'absence_threshold_high' => $absenceHigh,
+            'dashboard_enabled' => $dashboardEnabled
         ];
         $response['buildings'] = json_decode($meta['buildings'] ?? '[]');
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
@@ -1448,9 +1471,30 @@ async function refreshData(options = {}) {
             data.attendance = data.attendance.map(a => ({...a, status: Number(a.status)}));
         }
         if(!data.settings) {
-            data.settings = {title: 'Çeşme Belediyesi Kültür Müdürlüğü', absence_threshold: 30};
-        } else if (data.settings.absence_threshold === undefined || data.settings.absence_threshold === null || data.settings.absence_threshold === '') {
-            data.settings.absence_threshold = 30;
+            data.settings = {
+                title: 'Çeşme Belediyesi Kültür Müdürlüğü',
+                absence_threshold: 40,
+                absence_threshold_low: 20,
+                absence_threshold_medium: 30,
+                absence_threshold_high: 40,
+                dashboard_enabled: 1
+            };
+        } else {
+            if (data.settings.absence_threshold === undefined || data.settings.absence_threshold === null || data.settings.absence_threshold === '') {
+                data.settings.absence_threshold = 40;
+            }
+            if (data.settings.absence_threshold_low === undefined || data.settings.absence_threshold_low === null || data.settings.absence_threshold_low === '') {
+                data.settings.absence_threshold_low = 20;
+            }
+            if (data.settings.absence_threshold_medium === undefined || data.settings.absence_threshold_medium === null || data.settings.absence_threshold_medium === '') {
+                data.settings.absence_threshold_medium = 30;
+            }
+            if (data.settings.absence_threshold_high === undefined || data.settings.absence_threshold_high === null || data.settings.absence_threshold_high === '') {
+                data.settings.absence_threshold_high = data.settings.absence_threshold ?? 40;
+            }
+            if (data.settings.dashboard_enabled === undefined || data.settings.dashboard_enabled === null || data.settings.dashboard_enabled === '') {
+                data.settings.dashboard_enabled = 1;
+            }
         }
         data.attendanceRange = res.attendanceRange || range;
         reportData = null;
@@ -1509,20 +1553,51 @@ function showApp(firstTime){
     document.getElementById('currentUser').textContent=String(currentUser.name)+' ('+String(currentUser.role)+')';
     renderNav();
     if(firstTime) {
-        showDashboard();
+        if(isDashboardEnabled()) {
+            showDashboard();
+        } else {
+            showCalendar();
+        }
         return;
     }
     if(document.querySelector('.dashboard')) {
+        if(!isDashboardEnabled()) {
+            showCalendar();
+            return;
+        }
         showDashboard();
         return;
     }
     if(document.querySelector('.calendar')) showCalendar();
 }
 
+function isDashboardEnabled(){
+    return Number(data.settings?.dashboard_enabled ?? 1) === 1;
+}
+
+function getNavKeys(){
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const keys = [];
+    if(isDashboardEnabled()) keys.push('dashboard');
+    keys.push('calendar');
+    if(isAdmin) keys.push('courses', 'teachers');
+    keys.push('students');
+    keys.push('reports');
+    if(isAdmin) keys.push('admin');
+    return keys;
+}
+
+function getNavIndex(key){
+    return getNavKeys().indexOf(key);
+}
+
 function renderNav(){
     const isAdmin=currentUser.role==='admin';
-    let html=`<button class="active" onclick="showDashboard()">🏠 Gösterge Paneli</button>`;
-    html+=`<button onclick="showCalendar()">📅 Takvim</button>`;
+    let html='';
+    if(isDashboardEnabled()) {
+        html+=`<button class="active" onclick="showDashboard()">🏠 Gösterge Paneli</button>`;
+    }
+    html+=`<button ${isDashboardEnabled() ? '' : 'class="active" '}onclick="showCalendar()">📅 Takvim</button>`;
     if(isAdmin)html+=`<button onclick="showCourses()">📚 Kurslar</button><button onclick="showTeachers()">👨‍🏫 Öğretmenler</button>`;
     html+=`<button onclick="showStudents()">👨‍🎓 Öğrenciler</button>`;
     html+=`<button onclick="showReports()">📊 Raporlar</button>`;
@@ -1565,10 +1640,23 @@ function getDashboardCoursesForDate(ds){
         .map(item => item.course);
 }
 
+function normalizeThresholdValue(value, fallback){
+    const raw = Number(value);
+    if(!Number.isFinite(raw) || raw <= 0 || raw > 100) return fallback;
+    return Math.round(raw);
+}
+
+function getAbsenceThresholds(){
+    let low = normalizeThresholdValue(data.settings?.absence_threshold_low ?? 20, 20);
+    let medium = normalizeThresholdValue(data.settings?.absence_threshold_medium ?? 30, 30);
+    let high = normalizeThresholdValue(data.settings?.absence_threshold_high ?? (data.settings?.absence_threshold ?? 40), 40);
+    if(low > medium) medium = low;
+    if(medium > high) high = medium;
+    return {low, medium, high};
+}
+
 function getAbsenceThreshold(){
-    const raw = Number(data.settings?.absence_threshold ?? 30);
-    if(!Number.isFinite(raw) || raw <= 0 || raw > 100) return 30;
-    return raw;
+    return getAbsenceThresholds().high;
 }
 
 function getAbsenceSummary(){
@@ -1589,21 +1677,27 @@ function getAbsenceSummary(){
     });
     const studentsMap = new Map((data.students || []).map(s => [Number(s.id), s]));
     const coursesMap = new Map((data.courses || []).map(c => [Number(c.id), c]));
-    const threshold = getAbsenceThreshold();
+    const thresholds = getAbsenceThresholds();
     const results = [];
     stats.forEach(entry => {
         if(entry.total === 0) return;
         const rate = (entry.absent / entry.total) * 100;
-        if(rate < threshold) return;
+        if(rate < thresholds.low) return;
         const student = studentsMap.get(entry.studentId);
         const course = coursesMap.get(entry.courseId);
         if(!student || !course) return;
+        const riskLevel = rate >= thresholds.high
+            ? 'high'
+            : rate >= thresholds.medium
+                ? 'medium'
+                : 'low';
         results.push({
             student,
             course,
             rate,
             total: entry.total,
-            absent: entry.absent
+            absent: entry.absent,
+            riskLevel
         });
     });
     return results.sort((a, b) => (b.rate - a.rate) || (b.absent - a.absent)).slice(0, 10);
@@ -1653,12 +1747,16 @@ function drawBarChart(canvasId, labels, values, colors){
 }
 
 function showDashboard(){
-    setActiveNav(0);
+    if(!isDashboardEnabled()){
+        showCalendar();
+        return;
+    }
+    setActiveNav(getNavIndex('dashboard'));
     const today = formatDate(getServerNow());
     const todayCourses = getDashboardCoursesForDate(today);
     const absenceSummary = getAbsenceSummary();
     const announcements = data.announcements || [];
-    const threshold = getAbsenceThreshold();
+    const thresholds = getAbsenceThresholds();
     let html = `<div class="dashboard"><div class="dashboard-grid">`;
     html += `<div class="card dashboard-card">
         <h2>📌 Bugünkü Dersler</h2>`;
@@ -1687,7 +1785,7 @@ function showDashboard(){
 
     html += `<div class="card dashboard-card">
         <h2>🚨 Devamsızlık Oranı Yüksek Öğrenciler</h2>
-        <p style="margin-bottom:10px;color:#555;font-size:0.85em;">Eşik: %${threshold} (Seçili tarih aralığı: ${escapeHtml(data.attendanceRange?.start || '')} - ${escapeHtml(data.attendanceRange?.end || '')})</p>`;
+        <p style="margin-bottom:10px;color:#555;font-size:0.85em;">Eşikler: Düşük %${thresholds.low} / Orta %${thresholds.medium} / Yüksek %${thresholds.high} (Seçili tarih aralığı: ${escapeHtml(data.attendanceRange?.start || '')} - ${escapeHtml(data.attendanceRange?.end || '')})</p>`;
     if(absenceSummary.length === 0){
         html += `<p class="dashboard-empty">Eşiği aşan öğrenci bulunamadı.</p>`;
     } else {
@@ -1696,10 +1794,15 @@ function showDashboard(){
             <tr><th>Öğrenci</th><th>Kurs</th><th>Oran</th></tr>`;
         absenceSummary.forEach(item => {
             const studentName = `${item.student.name} ${item.student.surname}`;
+            const riskTag = item.riskLevel === 'high'
+                ? '<span class="dashboard-tag" style="background:#ffe0e0;color:#b00020;">Yüksek</span>'
+                : item.riskLevel === 'medium'
+                    ? '<span class="dashboard-tag" style="background:#fff4d6;color:#8a5a00;">Orta</span>'
+                    : '<span class="dashboard-tag" style="background:#e3f2fd;color:#1e3a5f;">Düşük</span>';
             html += `<tr>
                 <td>${escapeHtml(studentName)}</td>
                 <td>${escapeHtml(item.course.name)}</td>
-                <td>%${item.rate.toFixed(1)}</td>
+                <td>%${item.rate.toFixed(1)} ${riskTag}</td>
             </tr>`;
         });
         html += `</table></div>`;
@@ -1849,7 +1952,7 @@ async function changePassword() {
 
 // --- TAKVİM ---
 function showCalendar(){
-    setActiveNav(1);
+    setActiveNav(getNavIndex('calendar'));
     let dates=[];
     let title="";
 
@@ -2438,7 +2541,7 @@ async function copyCourseDays(courseId){
 }
 
 function showCourses(){
-    setActiveNav(2);
+    setActiveNav(getNavIndex('courses'));
     let html=`<div class="card"><h2>📚 Kurs Yönetimi</h2>
     
     <div class="filter-row" style="background:#e3f2fd; padding:10px; margin-bottom:15px; border-radius:5px;">
@@ -2501,7 +2604,7 @@ async function deleteCourse(id){
 }
 
 function showTeachers(){
-    setActiveNav(3);
+    setActiveNav(getNavIndex('teachers'));
     let html=`<div class="card"><h2>👨‍🏫 Öğretmen Yönetimi</h2>
     <div class="table-responsive"><button class="btn btn-primary" onclick="openTeacherModal()">+ Yeni Öğretmen</button>
     <table style="margin-top:15px"><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Kullanıcı Adı</th><th>Branş</th><th>İşlem</th></tr>`;
@@ -2543,7 +2646,7 @@ async function deleteTeacher(id){
 
 // --- ÖĞRENCİLER ---
 function showStudents(){
-    setActiveNav(currentUser.role==='admin'?4:2);
+    setActiveNav(getNavIndex('students'));
     
     // YENİ EKLENEN KISIM: Öğretmen Filtresi
     const isTeacher = currentUser.role === 'teacher';
@@ -2646,7 +2749,7 @@ async function deleteStudent(id){
 
 // --- RAPORLAR ---
 function showReports(){
-    setActiveNav(currentUser.role==='admin'?5:3);
+    setActiveNav(getNavIndex('reports'));
     const source = reportData || data;
     const isTeacher = currentUser.role === 'teacher';
     const isAdmin = currentUser.role === 'admin';
@@ -2771,7 +2874,7 @@ function generateReport(){
 
 // --- YÖNETİM ---
 function showAdmin(){
-    setActiveNav(6);
+    setActiveNav(getNavIndex('admin'));
     let html=`<div class="card"><h2>⚙️ Yönetim Paneli</h2>
     <div class="tabs"><button class="tab active" onclick="showAdminTab(0)">Kullanıcılar</button>
     <button class="tab" onclick="showAdminTab(1)">Tesisler/Sınıflar</button>
@@ -2859,7 +2962,13 @@ function showAdminTab(idx){
     }else{
         html=`<h3>Genel Ayarlar</h3>
         <div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div>
-        <div class="form-group"><label>Devamsızlık Eşik Oranı (%)</label><input type="number" id="settingAbsenceThreshold" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold ?? 30)}"></div>
+        <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+            <input type="checkbox" id="settingDashboardEnabled" ${Number(data.settings.dashboard_enabled ?? 1) === 1 ? 'checked' : ''} style="width:auto;margin:0;">
+            <label for="settingDashboardEnabled" style="margin:0;font-weight:normal;">Gösterge Panelini Aktif Et</label>
+        </div>
+        <div class="form-group"><label>Düşük Devamsızlık Eşiği (%)</label><input type="number" id="settingAbsenceThresholdLow" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold_low ?? 20)}"></div>
+        <div class="form-group"><label>Orta Devamsızlık Eşiği (%)</label><input type="number" id="settingAbsenceThresholdMedium" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold_medium ?? 30)}"></div>
+        <div class="form-group"><label>Yüksek Devamsızlık Eşiği (%)</label><input type="number" id="settingAbsenceThresholdHigh" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold_high ?? 40)}"></div>
         <button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
         <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
     }
@@ -2978,10 +3087,21 @@ async function deleteAnnouncement(id){
 }
 async function saveSettings(){
     const title = document.getElementById('settingTitle').value;
-    const rawThreshold = Number(document.getElementById('settingAbsenceThreshold').value);
-    const threshold = Number.isFinite(rawThreshold) ? Math.min(100, Math.max(1, Math.round(rawThreshold))) : 30;
+    const dashboardEnabled = document.getElementById('settingDashboardEnabled')?.checked ? 1 : 0;
+    const rawLow = Number(document.getElementById('settingAbsenceThresholdLow').value);
+    const rawMedium = Number(document.getElementById('settingAbsenceThresholdMedium').value);
+    const rawHigh = Number(document.getElementById('settingAbsenceThresholdHigh').value);
+    let low = Number.isFinite(rawLow) ? Math.min(100, Math.max(1, Math.round(rawLow))) : 20;
+    let medium = Number.isFinite(rawMedium) ? Math.min(100, Math.max(1, Math.round(rawMedium))) : 30;
+    let high = Number.isFinite(rawHigh) ? Math.min(100, Math.max(1, Math.round(rawHigh))) : 40;
+    if(low > medium) medium = low;
+    if(medium > high) high = medium;
     await apiCall('save_meta',{key:'title',value:title});
-    await apiCall('save_meta',{key:'absence_threshold',value:String(threshold)});
+    await apiCall('save_meta',{key:'dashboard_enabled',value:String(dashboardEnabled)});
+    await apiCall('save_meta',{key:'absence_threshold_low',value:String(low)});
+    await apiCall('save_meta',{key:'absence_threshold_medium',value:String(medium)});
+    await apiCall('save_meta',{key:'absence_threshold_high',value:String(high)});
+    await apiCall('save_meta',{key:'absence_threshold',value:String(high)});
     await refreshData({skipRender: true});
     alert('Kaydedildi!');
     showAdminTab(6);
