@@ -481,7 +481,7 @@ if (isset($_GET['action'])) {
         $stmt = $pdo->query("SELECT date, name FROM holidays");
         $response['holidays'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $stmt = $pdo->query("SELECT id, title, message, start_date, end_date FROM announcements WHERE is_active = 1 AND (start_date IS NULL OR start_date <= CURDATE()) AND (end_date IS NULL OR end_date >= CURDATE()) ORDER BY COALESCE(start_date, '1970-01-01') DESC, id DESC");
+        $stmt = $pdo->query("SELECT id, title, message, start_date, end_date FROM announcements WHERE is_active = 1 AND (start_date IS NULL OR start_date = '0000-00-00' OR start_date <= CURDATE()) AND (end_date IS NULL OR end_date = '0000-00-00' OR end_date >= CURDATE()) ORDER BY COALESCE(NULLIF(start_date, '0000-00-00'), '1970-01-01') DESC, id DESC");
         $response['announcements'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (($user['role'] ?? '') === 'admin') {
