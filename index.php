@@ -326,20 +326,25 @@ if (isset($_GET['action'])) {
         $stmt->execute([$u]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // İlk kurulum için varsayılan admin
-        if (!$user && $u === 'admin' && $p === 'admin123') {
-            $hash = password_hash('admin123', PASSWORD_DEFAULT);
-            $pdo->prepare("INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)")
-                ->execute(['Sistem Yöneticisi', 'admin', $hash, 'admin']);
-            $user = ['id' => 1, 'username' => 'admin', 'role' => 'admin', 'name' => 'Sistem Yöneticisi', 'password' => $hash];
-        }
-
-        if ($user && password_verify($p, $user['password'])) {
-            session_regenerate_id(true);
-            $_SESSION['user'] = ['id' => (int)$user['id'], 'username' => $user['username'], 'role' => $user['role'], 'name' => $user['name']];
-            unset($user['password']);
-            echo json_encode(['status' => 'success', 'user' => $user]);
-            exit;
+        if ($user) {
+            $passwordValid = password_verify($p, $user['password']);
+            $needsMigration = false;
+            if (!$passwordValid && password_get_info($user['password'])['algo'] === 0 && hash_equals($p, $user['password'])) {
+                $passwordValid = true;
+                $needsMigration = true;
+            }
+            if ($passwordValid) {
+                if ($needsMigration) {
+                    $hash = password_hash($p, PASSWORD_DEFAULT);
+                    $pdo->prepare("UPDATE users SET password=? WHERE id=?")->execute([$hash, $user['id']]);
+                    $user['password'] = $hash;
+                }
+                session_regenerate_id(true);
+                $_SESSION['user'] = ['id' => (int)$user['id'], 'username' => $user['username'], 'role' => $user['role'], 'name' => $user['name']];
+                unset($user['password']);
+                echo json_encode(['status' => 'success', 'user' => $user]);
+                exit;
+            }
         }
 
         // Öğretmen Kontrolü
@@ -348,20 +353,26 @@ if (isset($_GET['action'])) {
         $teacher = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $auth = false;
-        if($teacher) {
-            if(password_verify($p, $teacher['password'])) {
+        if ($teacher) {
+            $auth = password_verify($p, $teacher['password']);
+            $needsMigration = false;
+            if (!$auth && password_get_info($teacher['password'])['algo'] === 0 && hash_equals($p, $teacher['password'])) {
                 $auth = true;
-            } elseif ($p === $teacher['password']) {
-                $auth = true; 
+                $needsMigration = true;
+            }
+            if ($auth && $needsMigration) {
+                $hash = password_hash($p, PASSWORD_DEFAULT);
+                $pdo->prepare("UPDATE teachers SET password=? WHERE id=?")->execute([$hash, $teacher['id']]);
+                $teacher['password'] = $hash;
             }
         }
 
         if ($auth) {
-             session_regenerate_id(true);
-             $_SESSION['user'] = ['id' => (int)$teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
-             $tUser = ['id' => $teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
-             echo json_encode(['status' => 'success', 'user' => $tUser]);
-             exit;
+            session_regenerate_id(true);
+            $_SESSION['user'] = ['id' => (int)$teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
+            $tUser = ['id' => $teacher['id'], 'username' => $teacher['username'], 'role' => 'teacher', 'name' => $teacher['name']];
+            echo json_encode(['status' => 'success', 'user' => $tUser]);
+            exit;
         }
 
         echo json_encode(['status' => 'error', 'message' => 'Hatalı kullanıcı adı veya şifre']);
@@ -1612,6 +1623,54 @@ function formatDate(d){
     return `${year}-${month}-${day}`;
 }
 
+function parseDateInput(value){
+    if(!value) return null;
+    if(value instanceof Date) return value;
+    const str = String(value);
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if(match){
+        const year = Number(match[1]);
+        const month = Number(match[2]) - 1;
+        const day = Number(match[3]);
+        return new Date(year, month, day);
+    }
+    const parsed = new Date(str);
+    if(Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+}
+
+function formatDisplayDate(value){
+    if(!value) return '';
+    if(typeof value === 'string'){
+        const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if(match){
+            return `${match[3]}.${match[2]}.${match[1]}`;
+        }
+    }
+    const date = parseDateInput(value);
+    if(!date) return String(value);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}.${month}.${year}`;
+}
+
+function formatDisplayDateWithWeekday(value){
+    const date = parseDateInput(value);
+    if(!date) return formatDisplayDate(value);
+    const weekday = date.toLocaleDateString('tr-TR', { weekday: 'long' });
+    return `${weekday} ${formatDisplayDate(date)}`;
+}
+
+function formatDisplayRange(start, end, emptyStartLabel, emptyEndLabel){
+    const startText = start ? formatDisplayDate(start) : (emptyStartLabel ?? '');
+    const endText = end ? formatDisplayDate(end) : (emptyEndLabel ?? '');
+    if(start || end){
+        return `${startText || ''} - ${endText || ''}`.trim();
+    }
+    return '';
+}
+
 function getDashboardCourseList(){
     const courses = data.courses || [];
     if(currentUser && currentUser.role === 'teacher') {
@@ -1785,7 +1844,7 @@ function showDashboard(){
 
     html += `<div class="card dashboard-card">
         <h2>🚨 Devamsızlık Oranı Yüksek Öğrenciler</h2>
-        <p style="margin-bottom:10px;color:#555;font-size:0.85em;">Eşikler: Düşük %${thresholds.low} / Orta %${thresholds.medium} / Yüksek %${thresholds.high} (Seçili tarih aralığı: ${escapeHtml(data.attendanceRange?.start || '')} - ${escapeHtml(data.attendanceRange?.end || '')})</p>`;
+        <p style="margin-bottom:10px;color:#555;font-size:0.85em;">Eşikler: Düşük %${thresholds.low} / Orta %${thresholds.medium} / Yüksek %${thresholds.high} (Seçili tarih aralığı: ${escapeHtml(formatDisplayDate(data.attendanceRange?.start || ''))} - ${escapeHtml(formatDisplayDate(data.attendanceRange?.end || ''))})</p>`;
     if(absenceSummary.length === 0){
         html += `<p class="dashboard-empty">Eşiği aşan öğrenci bulunamadı.</p>`;
     } else {
@@ -1963,14 +2022,15 @@ function showCalendar(){
         const day=currentViewDate.getDay(),diff=currentViewDate.getDate()-day+(day===0?-6:1);
         const startOfWeek=new Date(currentViewDate); startOfWeek.setDate(diff);
         dates = Array.from({length:7},(_,i)=>{const dt=new Date(startOfWeek);dt.setDate(startOfWeek.getDate()+i);return dt});
-        title = `${dates[0].toLocaleDateString('tr-TR')} - ${dates[6].toLocaleDateString('tr-TR')}`;
+        title = `${formatDisplayDate(dates[0])} - ${formatDisplayDate(dates[6])}`;
     } else if(viewMode === 'month') {
         const year=currentViewDate.getFullYear(), month=currentViewDate.getMonth();
         const firstDay=new Date(year,month,1);
+        const lastDay=new Date(year,month + 1,0);
         let startDayIndex = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1; 
         let iterDate = new Date(firstDay);
         iterDate.setDate(iterDate.getDate() - startDayIndex);
-        title = firstDay.toLocaleDateString('tr-TR',{month:'long', year:'numeric'});
+        title = `${formatDisplayDate(firstDay)} - ${formatDisplayDate(lastDay)}`;
         for(let i=0; i<42; i++){dates.push(new Date(iterDate));iterDate.setDate(iterDate.getDate()+1);}
     } else if (viewMode === 'custom' && customStart && customEnd) {
         let d = new Date(customStart);
@@ -1979,7 +2039,7 @@ function showCalendar(){
             dates.push(new Date(d));
             d.setDate(d.getDate() + 1);
         }
-        title = `${new Date(customStart).toLocaleDateString('tr-TR')} - ${new Date(customEnd).toLocaleDateString('tr-TR')}`;
+        title = `${formatDisplayDate(customStart)} - ${formatDisplayDate(customEnd)}`;
     }
 
     const visibleAnnouncements = (data.announcements || []).filter(a => !isAnnouncementHidden(a.id));
@@ -2123,7 +2183,7 @@ function getCoursesForDate(ds){
 function openDayModal(ds){
     const isAdmin=currentUser.role==='admin',courses=getCoursesForDate(ds);
     const holidayName=getHoliday(ds);
-    let html=`<div class="modal-header"><h2>📅 ${new Date(ds).toLocaleDateString('tr-TR',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</h2>
+    let html=`<div class="modal-header"><h2>📅 ${escapeHtml(formatDisplayDateWithWeekday(ds))}</h2>
     <span class="modal-close" onclick="closeModal()">×</span></div>`;
     if(holidayName)html+=`<div class="conflict" style="background:#f8d7da;border-left-color:#dc3545">🎉 Resmi Tatil: ${escapeHtml(holidayName)}</div>`;
     html+=`<h3 style="margin:15px 0">Bu Günün Kursları</h3>`;
@@ -2161,7 +2221,7 @@ async function openAttendance(cid,ds){
     const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
     const canManage = currentUser.role === 'admin' || (currentUser.role === 'teacher' && course.teacherId == currentUser.id);
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
-    <p><strong>Tarih:</strong> ${new Date(ds).toLocaleDateString('tr-TR')}</p>
+    <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
     ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
         <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
         <button class="btn btn-info btn-sm" onclick="openAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">➕ Kayıtlı Öğrenci</button>
@@ -2293,7 +2353,7 @@ function openStudentInfo(sid){
         const c = data.courses.find(x => x.id == cid);
         return c ? escapeHtml(c.name) : '';
     }).filter(Boolean).join(', ') : '';
-    const birthDate = s.date_of_birth ? new Date(s.date_of_birth).toLocaleDateString('tr-TR') : null;
+    const birthDate = s.date_of_birth ? formatDisplayDate(s.date_of_birth) : null;
     const age = calculateStudentAge(s.date_of_birth);
     const ageLine = age !== null ? `Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
     let html=`<div class="modal-header"><h2>👨‍🎓 Öğrenci Bilgileri</h2><span class="modal-close" onclick="closeModal()">×</span></div>
@@ -2830,6 +2890,10 @@ function generateReport(){
     const cid=document.getElementById('rCourse').value;
     const sid=document.getElementById('rStudent').value, status=document.getElementById('rStatus').value,
     start=document.getElementById('rStart').value, end=document.getElementById('rEnd').value;
+    if(start && end && start > end){
+        alert('Geçersiz tarih aralığı.');
+        return;
+    }
     
     let tid = "";
     if(currentUser.role === 'teacher') {
@@ -2860,7 +2924,7 @@ function generateReport(){
         if(a.status===ATT_STATUS_PRESENT) statusText='<span style="color:green">✓ Geldi</span>';
         else if(a.status===ATT_STATUS_ABSENT) statusText='<span style="color:red">✗ Gelmedi</span>';
         else if(a.status===ATT_STATUS_EXCUSED) statusText='<span style="color:#17a2b8">M Mazeretli</span>';
-        html+=`<tr><td>${escapeHtml(s?.name)} ${escapeHtml(s?.surname)}</td><td>${escapeHtml(c?.name||'-')}</td><td>${escapeHtml(t?.name||'-')}</td><td>${escapeHtml(a.date)}</td><td>${statusText}</td></tr>`;
+        html+=`<tr><td>${escapeHtml(s?.name)} ${escapeHtml(s?.surname)}</td><td>${escapeHtml(c?.name||'-')}</td><td>${escapeHtml(t?.name||'-')}</td><td>${escapeHtml(formatDisplayDate(a.date))}</td><td>${statusText}</td></tr>`;
     });
     html+=`</table></div>
     <div class="export-buttons">
@@ -2904,7 +2968,7 @@ function showAdminTab(idx){
         html=`<h3>Resmi Tatil Yönetimi</h3><div class="form-group"><input type="date" id="newHolDate"><input type="text" id="newHolName" placeholder="Tatil adı"><button class="btn btn-primary" onclick="addHoliday()">Ekle</button></div>
         <div class="table-responsive"><table><tr><th>Tarih</th><th>Ad</th><th>İşlem</th></tr>`;
         const sortedHolidays = [...data.holidays].sort((a,b)=>a.date.localeCompare(b.date));
-        sortedHolidays.forEach((h)=>{html+=`<tr><td>${escapeHtml(h.date)}</td><td>${escapeHtml(h.name)}</td><td><button class="btn btn-danger btn-sm" onclick="removeHoliday('${escapeAttr(h.date)}')">×</button></td></tr>`;});
+        sortedHolidays.forEach((h)=>{html+=`<tr><td>${escapeHtml(formatDisplayDate(h.date))}</td><td>${escapeHtml(h.name)}</td><td><button class="btn btn-danger btn-sm" onclick="removeHoliday('${escapeAttr(h.date)}')">×</button></td></tr>`;});
         html+=`</table></div>`;
     }else if(idx===3){
         const announcements = data.announcementsAll || [];
@@ -2914,7 +2978,9 @@ function showAdminTab(idx){
             html+=`<tr><td colspan="4">Duyuru bulunamadı.</td></tr>`;
         } else {
             announcements.forEach(a=>{
-                const rangeText = a.start_date || a.end_date ? `${escapeHtml(a.start_date || 'Başlangıç yok')} - ${escapeHtml(a.end_date || 'Süresiz')}` : 'Süresiz';
+                const rangeText = a.start_date || a.end_date
+                    ? escapeHtml(formatDisplayRange(a.start_date, a.end_date, 'Başlangıç yok', 'Süresiz'))
+                    : 'Süresiz';
                 const statusText = a.is_active ? 'Aktif' : 'Pasif';
                 html+=`<tr><td>${escapeHtml(a.title)}</td><td>${rangeText}</td><td>${statusText}</td>
                 <td>
@@ -2938,7 +3004,9 @@ function showAdminTab(idx){
             html+=`<tr><td colspan="4">Dönem bulunamadı.</td></tr>`;
         } else {
             periods.forEach(p=>{
-                const rangeText = p.start_date || p.end_date ? `${escapeHtml(p.start_date || 'Başlangıç yok')} - ${escapeHtml(p.end_date || 'Bitiş yok')}` : 'Tarih yok';
+                const rangeText = p.start_date || p.end_date
+                    ? escapeHtml(formatDisplayRange(p.start_date, p.end_date, 'Başlangıç yok', 'Bitiş yok'))
+                    : 'Tarih yok';
                 const statusText = p.is_active ? 'Aktif' : 'Pasif';
                 const actionButtons = `
                     <button class="btn btn-info btn-sm" onclick="openPeriodModal(${p.id})">Düzenle</button>
