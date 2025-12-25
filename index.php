@@ -480,7 +480,14 @@ if (isset($_GET['action'])) {
 
         $stmt = $pdo->query("SELECT * FROM meta_data");
         $meta = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
-        $response['settings'] = ['title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü'];
+        $absenceThreshold = isset($meta['absence_threshold']) ? (int)$meta['absence_threshold'] : 30;
+        if ($absenceThreshold <= 0 || $absenceThreshold > 100) {
+            $absenceThreshold = 30;
+        }
+        $response['settings'] = [
+            'title' => $meta['title'] ?? 'Çeşme Belediyesi Kültür Müdürlüğü',
+            'absence_threshold' => $absenceThreshold
+        ];
         $response['buildings'] = json_decode($meta['buildings'] ?? '[]');
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
         $response['activePeriod'] = $activePeriod;
@@ -1264,6 +1271,23 @@ tr:nth-child(even){background:#f9f9f9}
 .stat-card{background:linear-gradient(135deg,#1e3a5f,#2d5a87);color:#fff;padding:15px;border-radius:10px;text-align:center}
 .stat-card h3{font-size:1.8em}
 .stat-card p{font-size:0.85em;opacity:0.9}
+.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:15px;margin-bottom:15px}
+.dashboard-card{height:100%}
+.dashboard-list{display:flex;flex-direction:column;gap:10px}
+.dashboard-item{background:#f8f9fa;border-radius:8px;padding:10px;border:1px solid #e9ecef}
+.dashboard-item h4{margin:0 0 5px 0;font-size:0.95em;color:#1e3a5f}
+.dashboard-item p{margin:0;font-size:0.85em;color:#555}
+.dashboard-empty{color:#888;font-size:0.9em;font-style:italic}
+.dashboard-table{width:100%;border-collapse:collapse;font-size:0.85em}
+.dashboard-table th,.dashboard-table td{padding:8px;border:1px solid #ddd}
+.dashboard-table th{background:#1e3a5f;color:#fff}
+.dashboard-tag{display:inline-flex;align-items:center;gap:6px;font-size:0.8em;padding:4px 8px;border-radius:999px;background:#e3f2fd;color:#1e3a5f;font-weight:600}
+.dashboard-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px}
+.chart-card{background:#f8f9fa;border-radius:8px;padding:12px;border:1px solid #e9ecef}
+.chart-card canvas{width:100%;height:180px}
+.chart-legend{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:0.8em;color:#555}
+.chart-legend span{display:inline-flex;align-items:center;gap:6px}
+.chart-dot{width:10px;height:10px;border-radius:50%}
 .conflict{background:#fff3cd;padding:10px;border-radius:5px;border-left:4px solid #ffc107;margin:10px 0}
 .tabs{display:flex;gap:5px;margin-bottom:15px;flex-wrap:wrap}
 .tab{padding:10px 20px;background:#e9ecef;border:none;cursor:pointer;border-radius:5px 5px 0 0;flex:1;min-width: 100px;}
@@ -1423,6 +1447,11 @@ async function refreshData(options = {}) {
         if (data.attendance && Array.isArray(data.attendance)) {
             data.attendance = data.attendance.map(a => ({...a, status: Number(a.status)}));
         }
+        if(!data.settings) {
+            data.settings = {title: 'Çeşme Belediyesi Kültür Müdürlüğü', absence_threshold: 30};
+        } else if (data.settings.absence_threshold === undefined || data.settings.absence_threshold === null || data.settings.absence_threshold === '') {
+            data.settings.absence_threshold = 30;
+        }
         data.attendanceRange = res.attendanceRange || range;
         reportData = null;
         reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
@@ -1479,12 +1508,21 @@ function showApp(firstTime){
     document.getElementById('mainApp').classList.remove('hidden');
     document.getElementById('currentUser').textContent=String(currentUser.name)+' ('+String(currentUser.role)+')';
     renderNav();
-    if(firstTime || document.querySelector('.calendar')) showCalendar();
+    if(firstTime) {
+        showDashboard();
+        return;
+    }
+    if(document.querySelector('.dashboard')) {
+        showDashboard();
+        return;
+    }
+    if(document.querySelector('.calendar')) showCalendar();
 }
 
 function renderNav(){
     const isAdmin=currentUser.role==='admin';
-    let html=`<button class="active" onclick="showCalendar()">📅 Takvim</button>`;
+    let html=`<button class="active" onclick="showDashboard()">🏠 Gösterge Paneli</button>`;
+    html+=`<button onclick="showCalendar()">📅 Takvim</button>`;
     if(isAdmin)html+=`<button onclick="showCourses()">📚 Kurslar</button><button onclick="showTeachers()">👨‍🏫 Öğretmenler</button>`;
     html+=`<button onclick="showStudents()">👨‍🎓 Öğrenciler</button>`;
     html+=`<button onclick="showReports()">📊 Raporlar</button>`;
@@ -1497,6 +1535,232 @@ function formatDate(d){
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+}
+
+function getDashboardCourseList(){
+    const courses = data.courses || [];
+    if(currentUser && currentUser.role === 'teacher') {
+        return courses.filter(c => c.teacherId == currentUser.id);
+    }
+    return courses;
+}
+
+function isCourseActiveOnDate(course, ds){
+    if(course.startDate && ds < course.startDate) return false;
+    if(course.endDate && ds > course.endDate) return false;
+    return true;
+}
+
+function getDashboardCoursesForDate(ds){
+    const dt = new Date(ds);
+    const dayName = DAYS[dt.getDay()===0?6:dt.getDay()-1];
+    return getDashboardCourseList()
+        .filter(c => c.day === dayName && isCourseActiveOnDate(c, ds))
+        .map((c, index) => {
+            const mod = c.modifications && c.modifications[ds];
+            const timeValue = getCourseStartMinutes(mod ? mod.time : c.time);
+            return {course: c, index, timeValue};
+        })
+        .sort((a, b) => (a.timeValue - b.timeValue) || (a.index - b.index))
+        .map(item => item.course);
+}
+
+function getAbsenceThreshold(){
+    const raw = Number(data.settings?.absence_threshold ?? 30);
+    if(!Number.isFinite(raw) || raw <= 0 || raw > 100) return 30;
+    return raw;
+}
+
+function getAbsenceSummary(){
+    const courseList = getDashboardCourseList();
+    const courseIds = new Set(courseList.map(c => Number(c.id)));
+    const stats = new Map();
+    (data.attendance || []).forEach(a => {
+        const courseId = Number(a.courseId);
+        if(!courseIds.has(courseId)) return;
+        const studentId = Number(a.studentId);
+        const key = `${courseId}-${studentId}`;
+        if(!stats.has(key)) {
+            stats.set(key, {courseId, studentId, total: 0, absent: 0});
+        }
+        const entry = stats.get(key);
+        entry.total += 1;
+        if(Number(a.status) === ATT_STATUS_ABSENT) entry.absent += 1;
+    });
+    const studentsMap = new Map((data.students || []).map(s => [Number(s.id), s]));
+    const coursesMap = new Map((data.courses || []).map(c => [Number(c.id), c]));
+    const threshold = getAbsenceThreshold();
+    const results = [];
+    stats.forEach(entry => {
+        if(entry.total === 0) return;
+        const rate = (entry.absent / entry.total) * 100;
+        if(rate < threshold) return;
+        const student = studentsMap.get(entry.studentId);
+        const course = coursesMap.get(entry.courseId);
+        if(!student || !course) return;
+        results.push({
+            student,
+            course,
+            rate,
+            total: entry.total,
+            absent: entry.absent
+        });
+    });
+    return results.sort((a, b) => (b.rate - a.rate) || (b.absent - a.absent)).slice(0, 10);
+}
+
+function truncateText(text, maxLength){
+    const value = String(text ?? '');
+    if(value.length <= maxLength) return value;
+    return value.slice(0, maxLength - 1) + '…';
+}
+
+function drawBarChart(canvasId, labels, values, colors){
+    const canvas = document.getElementById(canvasId);
+    if(!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, width, height);
+    const maxValue = Math.max(...values, 1);
+    const padding = 20;
+    const chartHeight = height - padding * 2 - 20;
+    const barWidth = (width - padding * 2) / values.length;
+    ctx.font = '12px Segoe UI';
+    ctx.fillStyle = '#1e3a5f';
+    values.forEach((value, index) => {
+        const barHeight = (value / maxValue) * chartHeight;
+        const x = padding + index * barWidth + barWidth * 0.15;
+        const y = height - padding - barHeight;
+        const bw = barWidth * 0.7;
+        ctx.fillStyle = colors[index % colors.length];
+        ctx.fillRect(x, y, bw, barHeight);
+        ctx.fillStyle = '#1e3a5f';
+        ctx.fillText(String(value), x, y - 6);
+        const label = labels[index];
+        const labelX = padding + index * barWidth + bw / 2;
+        ctx.save();
+        ctx.translate(labelX, height - padding + 12);
+        ctx.rotate(-Math.PI / 6);
+        ctx.textAlign = 'center';
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+    });
+}
+
+function showDashboard(){
+    setActiveNav(0);
+    const today = formatDate(getServerNow());
+    const todayCourses = getDashboardCoursesForDate(today);
+    const absenceSummary = getAbsenceSummary();
+    const announcements = data.announcements || [];
+    const threshold = getAbsenceThreshold();
+    let html = `<div class="dashboard"><div class="dashboard-grid">`;
+    html += `<div class="card dashboard-card">
+        <h2>📌 Bugünkü Dersler</h2>`;
+    if(todayCourses.length === 0){
+        html += `<p class="dashboard-empty">Bugün için planlı ders bulunamadı.</p>`;
+    } else {
+        html += `<div class="dashboard-list">`;
+        todayCourses.forEach(c => {
+            const mod = c.modifications && c.modifications[today];
+            const timeText = mod ? mod.time : c.time;
+            const cancelled = c.cancelledDates && c.cancelledDates.includes(today);
+            const teacher = currentUser.role === 'teacher'
+                ? currentUser.name
+                : (data.teachers || []).find(t => t.id == c.teacherId)?.name || 'Belirtilmedi';
+            const locationText = [c.building, c.classroom].filter(Boolean).join(' - ');
+            html += `<div class="dashboard-item">
+                <h4>${escapeHtml(c.name)} ${cancelled ? '<span class="dashboard-tag" style="background:#ffe0e0;color:#b00020;">İptal</span>' : ''}</h4>
+                <p><strong>Saat:</strong> ${escapeHtml(timeText || 'Belirtilmedi')}</p>
+                <p><strong>Öğretmen:</strong> ${escapeHtml(teacher)}</p>
+                <p><strong>Sınıf:</strong> ${escapeHtml(locationText || 'Belirtilmedi')}</p>
+            </div>`;
+        });
+        html += `</div>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="card dashboard-card">
+        <h2>🚨 Devamsızlık Oranı Yüksek Öğrenciler</h2>
+        <p style="margin-bottom:10px;color:#555;font-size:0.85em;">Eşik: %${threshold} (Seçili tarih aralığı: ${escapeHtml(data.attendanceRange?.start || '')} - ${escapeHtml(data.attendanceRange?.end || '')})</p>`;
+    if(absenceSummary.length === 0){
+        html += `<p class="dashboard-empty">Eşiği aşan öğrenci bulunamadı.</p>`;
+    } else {
+        html += `<div class="table-responsive">
+            <table class="dashboard-table">
+            <tr><th>Öğrenci</th><th>Kurs</th><th>Oran</th></tr>`;
+        absenceSummary.forEach(item => {
+            const studentName = `${item.student.name} ${item.student.surname}`;
+            html += `<tr>
+                <td>${escapeHtml(studentName)}</td>
+                <td>${escapeHtml(item.course.name)}</td>
+                <td>%${item.rate.toFixed(1)}</td>
+            </tr>`;
+        });
+        html += `</table></div>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="dashboard-grid">`;
+    html += `<div class="card dashboard-card">
+        <h2>📊 Özet Grafikler</h2>
+        <div class="dashboard-charts">
+            <div class="chart-card">
+                <strong>Yoklama Durumu</strong>
+                <canvas id="attendanceChart"></canvas>
+                <div class="chart-legend">
+                    <span><i class="chart-dot" style="background:#28a745"></i>Geldi</span>
+                    <span><i class="chart-dot" style="background:#dc3545"></i>Gelmedi</span>
+                    <span><i class="chart-dot" style="background:#17a2b8"></i>Mazeretli</span>
+                </div>
+            </div>
+            <div class="chart-card">
+                <strong>Kurs Dağılımı (Gün)</strong>
+                <canvas id="courseChart"></canvas>
+            </div>
+        </div>
+    </div>`;
+    if(announcements.length > 0){
+        html += `<div class="card dashboard-card">
+            <h2>📢 Aktif Duyurular</h2>
+            <div class="dashboard-list">`;
+        announcements.forEach(a => {
+            html += `<div class="dashboard-item">
+                <h4>${escapeHtml(a.title)}</h4>
+                <p>${escapeHtml(truncateText(a.message, 140))}</p>
+            </div>`;
+        });
+        html += `</div></div>`;
+    }
+    html += `</div></div>`;
+    document.getElementById('mainContent').innerHTML = html;
+    requestAnimationFrame(() => {
+        const relevantCourseIds = new Set(getDashboardCourseList().map(c => Number(c.id)));
+        const attendance = (data.attendance || []).filter(a => relevantCourseIds.has(Number(a.courseId)));
+        const counts = {
+            present: attendance.filter(a => Number(a.status) === ATT_STATUS_PRESENT).length,
+            absent: attendance.filter(a => Number(a.status) === ATT_STATUS_ABSENT).length,
+            excused: attendance.filter(a => Number(a.status) === ATT_STATUS_EXCUSED).length
+        };
+        drawBarChart(
+            'attendanceChart',
+            ['Geldi', 'Gelmedi', 'Mazeretli'],
+            [counts.present, counts.absent, counts.excused],
+            ['#28a745', '#dc3545', '#17a2b8']
+        );
+        const dayCounts = DAYS.map(day => getDashboardCourseList().filter(c => c.day === day).length);
+        drawBarChart(
+            'courseChart',
+            DAYS,
+            dayCounts,
+            ['#1e3a5f', '#2d5a87', '#4d7aaa', '#6b90c2', '#91abd4', '#b2c5e5', '#d3def4']
+        );
+    });
 }
 
 function getVisibleDateRange() {
@@ -1585,7 +1849,7 @@ async function changePassword() {
 
 // --- TAKVİM ---
 function showCalendar(){
-    setActiveNav(0);
+    setActiveNav(1);
     let dates=[];
     let title="";
 
@@ -2174,7 +2438,7 @@ async function copyCourseDays(courseId){
 }
 
 function showCourses(){
-    setActiveNav(1);
+    setActiveNav(2);
     let html=`<div class="card"><h2>📚 Kurs Yönetimi</h2>
     
     <div class="filter-row" style="background:#e3f2fd; padding:10px; margin-bottom:15px; border-radius:5px;">
@@ -2237,7 +2501,7 @@ async function deleteCourse(id){
 }
 
 function showTeachers(){
-    setActiveNav(2);
+    setActiveNav(3);
     let html=`<div class="card"><h2>👨‍🏫 Öğretmen Yönetimi</h2>
     <div class="table-responsive"><button class="btn btn-primary" onclick="openTeacherModal()">+ Yeni Öğretmen</button>
     <table style="margin-top:15px"><tr><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Kullanıcı Adı</th><th>Branş</th><th>İşlem</th></tr>`;
@@ -2279,7 +2543,7 @@ async function deleteTeacher(id){
 
 // --- ÖĞRENCİLER ---
 function showStudents(){
-    setActiveNav(currentUser.role==='admin'?3:4);
+    setActiveNav(currentUser.role==='admin'?4:2);
     
     // YENİ EKLENEN KISIM: Öğretmen Filtresi
     const isTeacher = currentUser.role === 'teacher';
@@ -2382,7 +2646,7 @@ async function deleteStudent(id){
 
 // --- RAPORLAR ---
 function showReports(){
-    setActiveNav(4);
+    setActiveNav(currentUser.role==='admin'?5:3);
     const source = reportData || data;
     const isTeacher = currentUser.role === 'teacher';
     const isAdmin = currentUser.role === 'admin';
@@ -2507,7 +2771,7 @@ function generateReport(){
 
 // --- YÖNETİM ---
 function showAdmin(){
-    setActiveNav(5);
+    setActiveNav(6);
     let html=`<div class="card"><h2>⚙️ Yönetim Paneli</h2>
     <div class="tabs"><button class="tab active" onclick="showAdminTab(0)">Kullanıcılar</button>
     <button class="tab" onclick="showAdminTab(1)">Tesisler/Sınıflar</button>
@@ -2593,7 +2857,10 @@ function showAdminTab(idx){
             <div class="form-group"><button class="btn btn-danger" onclick="confirmReset('all')">Her Şeyi Sıfırla</button></div>
         </div>`;
     }else{
-        html=`<h3>Genel Ayarlar</h3><div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div><button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
+        html=`<h3>Genel Ayarlar</h3>
+        <div class="form-group"><label>Kurum Adı</label><input type="text" id="settingTitle" value="${escapeAttr(data.settings.title)}"></div>
+        <div class="form-group"><label>Devamsızlık Eşik Oranı (%)</label><input type="number" id="settingAbsenceThreshold" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold ?? 30)}"></div>
+        <button class="btn btn-primary" onclick="saveSettings()">Kaydet</button>
         <hr style="margin:20px 0"><h3>Veri Yönetimi</h3><button class="btn btn-info" onclick="downloadDatabaseBackup()">💾 Veritabanı Yedeği Al</button>`;
     }
     document.getElementById('adminContent').innerHTML=html;
@@ -2709,7 +2976,16 @@ async function deleteAnnouncement(id){
         showAdminTab(3);
     }
 }
-async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
+async function saveSettings(){
+    const title = document.getElementById('settingTitle').value;
+    const rawThreshold = Number(document.getElementById('settingAbsenceThreshold').value);
+    const threshold = Number.isFinite(rawThreshold) ? Math.min(100, Math.max(1, Math.round(rawThreshold))) : 30;
+    await apiCall('save_meta',{key:'title',value:title});
+    await apiCall('save_meta',{key:'absence_threshold',value:String(threshold)});
+    await refreshData({skipRender: true});
+    alert('Kaydedildi!');
+    showAdminTab(6);
+}
 function downloadDatabaseBackup(){window.location.href='?action=download_backup&token='+encodeURIComponent(CSRF_TOKEN);}
 
 // MODAL & EXPORT
