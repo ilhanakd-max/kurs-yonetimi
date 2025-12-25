@@ -1443,6 +1443,10 @@ function hideAnnouncement(id) {
     showCalendar();
 }
 
+function getVisibleAnnouncements() {
+    return (data.announcements || []).filter(a => !isAnnouncementHidden(a.id));
+}
+
 function formatAnnouncementMessage(message) {
     return escapeHtml(message).replace(/\n/g, '<br>');
 }
@@ -1582,6 +1586,10 @@ function showApp(firstTime){
     if(document.querySelector('.calendar')) showCalendar();
 }
 
+function showHome(){
+    showDashboard();
+}
+
 function isDashboardEnabled(){
     return Number(data.settings?.dashboard_enabled ?? 1) === 1;
 }
@@ -1613,6 +1621,7 @@ function renderNav(){
     html+=`<button onclick="showStudents()">👨‍🎓 Öğrenciler</button>`;
     html+=`<button onclick="showReports()">📊 Raporlar</button>`;
     if(isAdmin)html+=`<button onclick="showAdmin()">⚙️ Ayarlar</button>`;
+    html+=`<button onclick="showHome()">🏡 Ana Sayfa</button>`;
     document.getElementById('navBar').innerHTML=html;
 }
 function setActiveNav(idx){document.querySelectorAll('.nav button').forEach((b,i)=>b.classList.toggle('active',i===idx))}
@@ -1814,7 +1823,7 @@ function showDashboard(){
     const today = formatDate(getServerNow());
     const todayCourses = getDashboardCoursesForDate(today);
     const absenceSummary = getAbsenceSummary();
-    const announcements = data.announcements || [];
+    const announcements = getVisibleAnnouncements();
     const thresholds = getAbsenceThresholds();
     let html = `<div class="dashboard"><div class="dashboard-grid">`;
     html += `<div class="card dashboard-card">
@@ -2042,7 +2051,7 @@ function showCalendar(){
         title = `${formatDisplayDate(customStart)} - ${formatDisplayDate(customEnd)}`;
     }
 
-    const visibleAnnouncements = (data.announcements || []).filter(a => !isAnnouncementHidden(a.id));
+    const visibleAnnouncements = getVisibleAnnouncements();
     let announcementsHtml = '';
     if (visibleAnnouncements.length) {
         announcementsHtml = `<div class="conflict" style="margin-bottom:10px;">
