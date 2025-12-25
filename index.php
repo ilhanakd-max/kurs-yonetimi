@@ -91,6 +91,17 @@ function migrate_attendance_statuses(PDO $pdo, int $periodId): void {
         ->execute([ATTENDANCE_STATUS_PRESENT, ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
 }
 
+function get_absence_counts(PDO $pdo, int $periodId): array {
+    $stmt = $pdo->prepare("SELECT course_id, student_id,
+        SUM(CASE WHEN status=? THEN 1 ELSE 0 END) AS absent_count,
+        SUM(CASE WHEN status=? THEN 1 ELSE 0 END) AS excused_count
+        FROM attendance
+        WHERE period_id=?
+        GROUP BY course_id, student_id");
+    $stmt->execute([ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
 function parse_time_range_minutes(?string $timeRange): ?array {
     if (!$timeRange) {
         return null;
@@ -493,6 +504,11 @@ if (isset($_GET['action'])) {
         $meta = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
         $dashboardEnabled = isset($meta['dashboard_enabled']) ? (int)$meta['dashboard_enabled'] : 1;
         $dashboardEnabled = $dashboardEnabled === 1 ? 1 : 0;
+        $absenceDaysSource = $meta['absence_days_threshold'] ?? null;
+        $absenceDaysThreshold = is_numeric($absenceDaysSource) ? (int)$absenceDaysSource : 3;
+        if ($absenceDaysThreshold <= 0) {
+            $absenceDaysThreshold = 3;
+        }
         $absenceHighSource = $meta['absence_threshold_high'] ?? ($meta['absence_threshold'] ?? null);
         $absenceHigh = is_numeric($absenceHighSource) ? (int)$absenceHighSource : 40;
         if ($absenceHigh <= 0 || $absenceHigh > 100) {
@@ -520,11 +536,19 @@ if (isset($_GET['action'])) {
             'absence_threshold_low' => $absenceLow,
             'absence_threshold_medium' => $absenceMedium,
             'absence_threshold_high' => $absenceHigh,
-            'dashboard_enabled' => $dashboardEnabled
+            'dashboard_enabled' => $dashboardEnabled,
+            'absence_days_threshold' => $absenceDaysThreshold
         ];
         $response['buildings'] = json_decode($meta['buildings'] ?? '[]');
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
         $response['activePeriod'] = $activePeriod;
+        $absenceCounts = get_absence_counts($pdo, $activePeriodId);
+        $response['absenceCounts'] = array_map(fn($row) => [
+            'courseId' => (int)$row['course_id'],
+            'studentId' => (int)$row['student_id'],
+            'absent' => (int)$row['absent_count'],
+            'excused' => (int)$row['excused_count']
+        ], $absenceCounts);
         if (($user['role'] ?? '') === 'admin') {
             $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_deleted=0 ORDER BY is_active DESC, id DESC");
             $response['periods'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -956,7 +980,14 @@ if (isset($_GET['action'])) {
             }
             $cleanAtt[] = ['courseId' => (int)$a['course_id'], 'studentId' => (int)$a['student_id'], 'date' => $a['date'], 'status' => $normalizedStatus];
         }
-        echo json_encode(['status' => 'success', 'courses' => $courses, 'students' => $students, 'attendance' => $cleanAtt]);
+        $absenceCounts = get_absence_counts($pdo, $periodId);
+        $absenceSummary = array_map(fn($row) => [
+            'courseId' => (int)$row['course_id'],
+            'studentId' => (int)$row['student_id'],
+            'absent' => (int)$row['absent_count'],
+            'excused' => (int)$row['excused_count']
+        ], $absenceCounts);
+        echo json_encode(['status' => 'success', 'courses' => $courses, 'students' => $students, 'attendance' => $cleanAtt, 'absenceCounts' => $absenceSummary]);
         exit;
     }
 
@@ -1141,6 +1172,43 @@ if (isset($_GET['action'])) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
+        try {
+            $pdo->beginTransaction();
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    if ($action === 'remove_course_student_due_absence') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        require_admin($user);
+        $courseId = clean_int($data['courseId'] ?? null);
+        $studentId = clean_int($data['studentId'] ?? null);
+        if (!$courseId || !$studentId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $metaStmt = $pdo->query("SELECT item_key, item_value FROM meta_data");
+        $meta = $metaStmt->fetchAll(PDO::FETCH_KEY_PAIR);
+        $thresholdSource = $meta['absence_days_threshold'] ?? null;
+        $threshold = is_numeric($thresholdSource) ? (int)$thresholdSource : 3;
+        if ($threshold <= 0) {
+            $threshold = 3;
+        }
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND course_id=? AND student_id=? AND status=?");
+        $countStmt->execute([$activePeriodId, $courseId, $studentId, ATTENDANCE_STATUS_ABSENT]);
+        $absenceCount = (int)$countStmt->fetchColumn();
+        if ($absenceCount < $threshold) {
+            json_response(['status' => 'error', 'message' => 'Devamsızlık sınırı aşılmadı'], 400);
+        }
         try {
             $pdo->beginTransaction();
             $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
@@ -1397,7 +1465,7 @@ const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
 ];
 
-let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null};
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null,absenceCounts:[]};
 let reportData=null;
 let reportPeriodId=null;
 let currentUser=null;
@@ -1492,7 +1560,8 @@ async function refreshData(options = {}) {
                 absence_threshold_low: 20,
                 absence_threshold_medium: 30,
                 absence_threshold_high: 40,
-                dashboard_enabled: 1
+                dashboard_enabled: 1,
+                absence_days_threshold: 3
             };
         } else {
             if (data.settings.absence_threshold === undefined || data.settings.absence_threshold === null || data.settings.absence_threshold === '') {
@@ -1510,8 +1579,12 @@ async function refreshData(options = {}) {
             if (data.settings.dashboard_enabled === undefined || data.settings.dashboard_enabled === null || data.settings.dashboard_enabled === '') {
                 data.settings.dashboard_enabled = 1;
             }
+            if (data.settings.absence_days_threshold === undefined || data.settings.absence_days_threshold === null || data.settings.absence_days_threshold === '') {
+                data.settings.absence_days_threshold = 3;
+            }
         }
         data.attendanceRange = res.attendanceRange || range;
+        data.absenceCounts = res.absenceCounts || [];
         reportData = null;
         reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
@@ -1727,6 +1800,88 @@ function getAbsenceThreshold(){
     return getAbsenceThresholds().high;
 }
 
+function getAbsenceDaysThreshold(){
+    const raw = Number(data.settings?.absence_days_threshold ?? 3);
+    if(!Number.isFinite(raw) || raw <= 0) return 3;
+    return Math.round(raw);
+}
+
+function getAbsenceCountsMap(source){
+    const counts = source?.absenceCounts || [];
+    const map = new Map();
+    counts.forEach(row => {
+        const courseId = Number(row.courseId);
+        const studentId = Number(row.studentId);
+        const key = `${courseId}-${studentId}`;
+        map.set(key, {
+            absent: Number(row.absent) || 0,
+            excused: Number(row.excused) || 0
+        });
+    });
+    return map;
+}
+
+function getAbsenceWarnings(source, filters = {}){
+    const threshold = getAbsenceDaysThreshold();
+    const counts = source?.absenceCounts || [];
+    const studentsMap = new Map((source?.students || []).map(s => [Number(s.id), s]));
+    const coursesMap = new Map((source?.courses || []).map(c => [Number(c.id), c]));
+    const courseFilterId = filters.courseId ? Number(filters.courseId) : null;
+    const studentFilterId = filters.studentId ? Number(filters.studentId) : null;
+    const teacherId = filters.teacherId ? Number(filters.teacherId) : null;
+    const teacherCourseIds = teacherId
+        ? new Set((source?.courses || []).filter(c => Number(c.teacherId) === teacherId).map(c => Number(c.id)))
+        : null;
+    const results = [];
+    counts.forEach(row => {
+        const courseId = Number(row.courseId);
+        const studentId = Number(row.studentId);
+        if(courseFilterId && courseId !== courseFilterId) return;
+        if(studentFilterId && studentId !== studentFilterId) return;
+        if(teacherCourseIds && !teacherCourseIds.has(courseId)) return;
+        const absent = Number(row.absent) || 0;
+        const excused = Number(row.excused) || 0;
+        if(absent < threshold) return;
+        const student = studentsMap.get(studentId);
+        const course = coursesMap.get(courseId);
+        if(!student || !course) return;
+        results.push({student, course, absent, excused});
+    });
+    return results.sort((a, b) => (b.absent - a.absent));
+}
+
+function getCourseAbsenceTotals(source, filters = {}){
+    const counts = source?.absenceCounts || [];
+    const coursesMap = new Map((source?.courses || []).map(c => [Number(c.id), c]));
+    const courseFilterId = filters.courseId ? Number(filters.courseId) : null;
+    const studentFilterId = filters.studentId ? Number(filters.studentId) : null;
+    const teacherId = filters.teacherId ? Number(filters.teacherId) : null;
+    const teacherCourseIds = teacherId
+        ? new Set((source?.courses || []).filter(c => Number(c.teacherId) === teacherId).map(c => Number(c.id)))
+        : null;
+    const totals = new Map();
+    counts.forEach(row => {
+        const courseId = Number(row.courseId);
+        const studentId = Number(row.studentId);
+        if(courseFilterId && courseId !== courseFilterId) return;
+        if(studentFilterId && studentId !== studentFilterId) return;
+        if(teacherCourseIds && !teacherCourseIds.has(courseId)) return;
+        if(!totals.has(courseId)) {
+            totals.set(courseId, {absent: 0, excused: 0});
+        }
+        const entry = totals.get(courseId);
+        entry.absent += Number(row.absent) || 0;
+        entry.excused += Number(row.excused) || 0;
+    });
+    const results = [];
+    totals.forEach((value, courseId) => {
+        const course = coursesMap.get(courseId);
+        if(!course) return;
+        results.push({course, absent: value.absent, excused: value.excused});
+    });
+    return results.sort((a, b) => (b.absent - a.absent));
+}
+
 function getAbsenceSummary(){
     const courseList = getDashboardCourseList();
     const courseIds = new Set(courseList.map(c => Number(c.id)));
@@ -1823,8 +1978,10 @@ function showDashboard(){
     const today = formatDate(getServerNow());
     const todayCourses = getDashboardCoursesForDate(today);
     const absenceSummary = getAbsenceSummary();
+    const absenceWarnings = getAbsenceWarnings(data, {teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
     const announcements = getVisibleAnnouncements();
     const thresholds = getAbsenceThresholds();
+    const absenceDaysThreshold = getAbsenceDaysThreshold();
     let html = `<div class="dashboard"><div class="dashboard-grid">`;
     html += `<div class="card dashboard-card">
         <h2>📌 Bugünkü Dersler</h2>`;
@@ -1871,6 +2028,24 @@ function showDashboard(){
                 <td>${escapeHtml(studentName)}</td>
                 <td>${escapeHtml(item.course.name)}</td>
                 <td>%${item.rate.toFixed(1)} ${riskTag}</td>
+            </tr>`;
+        });
+        html += `</table></div>`;
+    }
+    html += `<h3 style="margin-top:15px;">Devamsızlık Sınırını Aştı (Sınır: ${absenceDaysThreshold} Gün)</h3>`;
+    if(absenceWarnings.length === 0){
+        html += `<p class="dashboard-empty">Devamsızlık sınırını aşan öğrenci bulunamadı.</p>`;
+    } else {
+        html += `<div class="table-responsive">
+            <table class="dashboard-table">
+            <tr><th>Öğrenci</th><th>Kurs</th><th>Devamsızlık</th><th>Uyarı</th></tr>`;
+        absenceWarnings.forEach(item => {
+            const studentName = `${item.student.name} ${item.student.surname}`;
+            html += `<tr>
+                <td>${escapeHtml(studentName)}</td>
+                <td>${escapeHtml(item.course.name)}</td>
+                <td>${item.absent}</td>
+                <td>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.</td>
             </tr>`;
         });
         html += `</table></div>`;
@@ -2228,9 +2403,13 @@ async function openAttendance(cid,ds){
     if(!course)return;
     const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
     const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
+    const countsMap = getAbsenceCountsMap(data);
+    const absenceThreshold = getAbsenceDaysThreshold();
+    const absenceWarnings = getAbsenceWarnings(data, {courseId: cid, teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
     const canManage = currentUser.role === 'admin' || (currentUser.role === 'teacher' && course.teacherId == currentUser.id);
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`).join('<br><br>')}</div>` : ''}
     ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
         <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
         <button class="btn btn-info btn-sm" onclick="openAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">➕ Kayıtlı Öğrenci</button>
@@ -2239,11 +2418,15 @@ async function openAttendance(cid,ds){
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
+        const counts = countsMap.get(`${cid}-${s.id}`) || {absent: 0, excused: 0};
+        const hasAbsenceWarning = counts.absent >= absenceThreshold;
+        const warningTag = hasAbsenceWarning ? `<span style="color:#b00020;font-size:0.8em;margin-left:6px;">Devamsızlık Sınırını Aştı</span>` : '';
+        html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>${warningTag}
         <div class="attendance-actions">
         <button type="button" class="btn ${present?.status===ATT_STATUS_PRESENT?'btn-success':'btn-secondary'}" data-att-status="${ATT_STATUS_PRESENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_PRESENT})">✓</button>
         <button type="button" class="btn ${present?.status===ATT_STATUS_ABSENT?'btn-danger':'btn-secondary'}" data-att-status="${ATT_STATUS_ABSENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_ABSENT})">✗</button>
         <button type="button" class="btn ${present?.status===ATT_STATUS_EXCUSED?'btn-info':'btn-secondary'}" data-att-status="${ATT_STATUS_EXCUSED}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_EXCUSED})">M</button>
+        ${currentUser.role === 'admin' && hasAbsenceWarning ? `<button type="button" class="btn btn-warning btn-sm" onclick="removeStudentFromCourseDueAbsence(${cid},${s.id},'${escapeAttr(ds)}')">Devamsızlık Nedeniyle Kurstan Çıkar</button>` : ''}
         ${canManage ? `<button type="button" class="btn btn-danger btn-sm" onclick="removeStudentFromCourse(${cid},${s.id},'${escapeAttr(ds)}')">Kaldır</button>` : ''}
         </div></div>`;
     });
@@ -2355,13 +2538,35 @@ async function removeStudentFromCourse(cid,sid,ds){
         openAttendance(cid,ds);
     }
 }
+async function removeStudentFromCourseDueAbsence(cid,sid,ds){
+    const warning = "Bu öğrenci devamsızlık sınırına ulaşmıştır.\nKurstan çıkarılması için admin onayı gereklidir.\nBu işlem geri alınamaz.";
+    if(!confirm(warning)) return;
+    const res = await apiCall('remove_course_student_due_absence', {courseId: cid, studentId: sid});
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        openAttendance(cid,ds);
+    } else if(res && res.message) {
+        alert(res.message);
+    }
+}
 function openStudentInfo(sid){
     const s = data.students.find(st => st.id === sid);
     if(!s) return;
+    const countsMap = getAbsenceCountsMap(data);
+    const absenceThreshold = getAbsenceDaysThreshold();
     const courseNames = s.courses ? s.courses.map(cid => {
         const c = data.courses.find(x => x.id == cid);
         return c ? escapeHtml(c.name) : '';
     }).filter(Boolean).join(', ') : '';
+    const courseAbsenceSummary = s.courses ? s.courses.map(cid => {
+        const c = data.courses.find(x => x.id == cid);
+        if(!c) return '';
+        const counts = countsMap.get(`${cid}-${s.id}`) || {absent: 0, excused: 0};
+        const warning = counts.absent >= absenceThreshold
+            ? ` - ${escapeHtml(s.name)} ${escapeHtml(s.surname)} (${escapeHtml(c.name)}) devamsızlık sayısı: ${counts.absent}. Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`
+            : '';
+        return `${escapeHtml(c.name)}: ${counts.absent} Devamsızlık / ${counts.excused} Mazeretli${warning}`;
+    }).filter(Boolean).join('<br>') : '';
     const birthDate = s.date_of_birth ? formatDisplayDate(s.date_of_birth) : null;
     const age = calculateStudentAge(s.date_of_birth);
     const ageLine = age !== null ? `Yaş: ${age}` : 'Yaş bilgisi bulunamadı';
@@ -2376,6 +2581,7 @@ function openStudentInfo(sid){
     <div class="form-group"><label>Veli Adı</label><div>${escapeHtml(s.parent_name||'-')}</div></div>
     <div class="form-group"><label>Veli Telefonu</label><div>${escapeHtml(s.parent_phone||'-')}</div></div>
     <div class="form-group"><label>Kurslar</label><div>${courseNames||'-'}</div></div>
+    <div class="form-group"><label>Devamsızlık Özeti</label><div>${courseAbsenceSummary||'-'}</div></div>
     </div>`;
     showModal(html);
 }
@@ -2887,7 +3093,12 @@ async function loadReportPeriod(periodId){
     const res = await apiCall('get_report_data', {period_id: periodId});
     if(res && res.status === 'success') {
         const normalizedAttendance = (res.attendance || []).map(a => ({...a, status: Number(a.status)}));
-        reportData = {courses: res.courses || [], students: res.students || [], attendance: normalizedAttendance};
+        reportData = {
+            courses: res.courses || [],
+            students: res.students || [],
+            attendance: normalizedAttendance,
+            absenceCounts: res.absenceCounts || []
+        };
     } else {
         reportData = null;
         alert(res ? res.message : 'Rapor verisi alınamadı');
@@ -2924,8 +3135,18 @@ function generateReport(){
     }
 
     const absent=filtered.filter(a=>a.status===ATT_STATUS_ABSENT), excused=filtered.filter(a=>a.status===ATT_STATUS_EXCUSED);
+    const absenceTotals = getCourseAbsenceTotals(source, {courseId: cid, studentId: sid, teacherId: tid});
+    const absenceWarnings = getAbsenceWarnings(source, {courseId: cid, studentId: sid, teacherId: tid});
+    const absenceDaysThreshold = getAbsenceDaysThreshold();
     let html=`<h3 style="margin:20px 0">Rapor Sonuçları</h3>
     <p>Toplam Kayıt: ${filtered.length} | Devamsızlık: ${absent.length} | Mazeretli: ${excused.length}</p>
+    ${absenceTotals.length ? `<div class="table-responsive" style="margin:10px 0;">
+        <table>
+        <tr><th>Kurs</th><th>Devamsızlık Sayısı</th><th>Mazeretli Sayısı</th></tr>
+        ${absenceTotals.map(item => `<tr><td>${escapeHtml(item.course.name)}</td><td>${item.absent}</td><td>${item.excused}</td></tr>`).join('')}
+        </table>
+    </div>` : ''}
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`).join('<br><br>')}</div>` : ''}
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
         const s=source.students.find(x=>x.id===a.studentId), c=source.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
@@ -3043,6 +3264,7 @@ function showAdminTab(idx){
             <input type="checkbox" id="settingDashboardEnabled" ${Number(data.settings.dashboard_enabled ?? 1) === 1 ? 'checked' : ''} style="width:auto;margin:0;">
             <label for="settingDashboardEnabled" style="margin:0;font-weight:normal;">Gösterge Panelini Aktif Et</label>
         </div>
+        <div class="form-group"><label>Devamsızlık Sınırı (Gün)</label><input type="number" id="settingAbsenceDaysThreshold" min="1" value="${escapeAttr(data.settings.absence_days_threshold ?? 3)}"></div>
         <div class="form-group"><label>Düşük Devamsızlık Eşiği (%)</label><input type="number" id="settingAbsenceThresholdLow" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold_low ?? 20)}"></div>
         <div class="form-group"><label>Orta Devamsızlık Eşiği (%)</label><input type="number" id="settingAbsenceThresholdMedium" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold_medium ?? 30)}"></div>
         <div class="form-group"><label>Yüksek Devamsızlık Eşiği (%)</label><input type="number" id="settingAbsenceThresholdHigh" min="1" max="100" value="${escapeAttr(data.settings.absence_threshold_high ?? 40)}"></div>
@@ -3165,6 +3387,8 @@ async function deleteAnnouncement(id){
 async function saveSettings(){
     const title = document.getElementById('settingTitle').value;
     const dashboardEnabled = document.getElementById('settingDashboardEnabled')?.checked ? 1 : 0;
+    const rawDaysThreshold = Number(document.getElementById('settingAbsenceDaysThreshold').value);
+    const daysThreshold = Number.isFinite(rawDaysThreshold) && rawDaysThreshold > 0 ? Math.round(rawDaysThreshold) : 3;
     const rawLow = Number(document.getElementById('settingAbsenceThresholdLow').value);
     const rawMedium = Number(document.getElementById('settingAbsenceThresholdMedium').value);
     const rawHigh = Number(document.getElementById('settingAbsenceThresholdHigh').value);
@@ -3175,6 +3399,7 @@ async function saveSettings(){
     if(medium > high) high = medium;
     await apiCall('save_meta',{key:'title',value:title});
     await apiCall('save_meta',{key:'dashboard_enabled',value:String(dashboardEnabled)});
+    await apiCall('save_meta',{key:'absence_days_threshold',value:String(daysThreshold)});
     await apiCall('save_meta',{key:'absence_threshold_low',value:String(low)});
     await apiCall('save_meta',{key:'absence_threshold_medium',value:String(medium)});
     await apiCall('save_meta',{key:'absence_threshold_high',value:String(high)});
