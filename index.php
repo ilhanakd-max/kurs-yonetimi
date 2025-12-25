@@ -1193,8 +1193,20 @@ if (isset($_GET['action'])) {
         require_admin($user);
         $courseId = clean_int($data['courseId'] ?? null);
         $studentId = clean_int($data['studentId'] ?? null);
+        $periodId = clean_int($data['periodId'] ?? null) ?: $activePeriodId;
         if (!$courseId || !$studentId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        $courseCheck = $pdo->prepare("SELECT id FROM courses WHERE id=? AND period_id=?");
+        $courseCheck->execute([$courseId, $periodId]);
+        if (!$courseCheck->fetchColumn()) {
+            json_response(['status' => 'error', 'message' => 'Kurs bulunamadı'], 404);
+        }
+        $enrollmentCheck = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
+        $enrollmentCheck->execute([$studentId, $courseId, $periodId]);
+        if (!$enrollmentCheck->fetchColumn()) {
+            echo json_encode(['status' => 'success', 'message' => 'Öğrenci zaten kurstan çıkarılmış.']);
+            exit;
         }
         $metaStmt = $pdo->query("SELECT item_key, item_value FROM meta_data");
         $meta = $metaStmt->fetchAll(PDO::FETCH_KEY_PAIR);
@@ -1204,15 +1216,14 @@ if (isset($_GET['action'])) {
             $threshold = 3;
         }
         $countStmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND course_id=? AND student_id=? AND status=?");
-        $countStmt->execute([$activePeriodId, $courseId, $studentId, ATTENDANCE_STATUS_ABSENT]);
+        $countStmt->execute([$periodId, $courseId, $studentId, ATTENDANCE_STATUS_ABSENT]);
         $absenceCount = (int)$countStmt->fetchColumn();
         if ($absenceCount < $threshold) {
             json_response(['status' => 'error', 'message' => 'Devamsızlık sınırı aşılmadı'], 400);
         }
         try {
             $pdo->beginTransaction();
-            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
-            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $periodId]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -2549,6 +2560,25 @@ async function removeStudentFromCourseDueAbsence(cid,sid,ds){
         alert(res.message);
     }
 }
+async function approveAbsenceRemovalFromReport(cid,sid){
+    const warning = "Bu öğrenci devamsızlık nedeniyle bu kurstan çıkarılacaktır.\nBu işlem geri alınamaz. Onaylıyor musunuz?";
+    if(!confirm(warning)) return;
+    const payload = {courseId: cid, studentId: sid};
+    if(reportPeriodId) {
+        payload.periodId = reportPeriodId;
+    }
+    const res = await apiCall('remove_course_student_due_absence', payload);
+    if(res && res.status === 'success') {
+        await refreshData({skipRender: true});
+        if(reportPeriodId) {
+            await refreshReportData(reportPeriodId);
+        }
+        generateReport();
+        alert('Öğrenci kurstan çıkarıldı.');
+    } else if(res && res.message) {
+        alert(res.message);
+    }
+}
 function openStudentInfo(sid){
     const s = data.students.find(st => st.id === sid);
     if(!s) return;
@@ -3085,9 +3115,12 @@ async function changeReportPeriod(periodId){
     await loadReportPeriod(reportPeriodId);
 }
 async function loadReportPeriod(periodId){
+    await refreshReportData(periodId);
+    showReports();
+}
+async function refreshReportData(periodId){
     if(!periodId || currentUser.role !== 'admin') {
         reportData = null;
-        showReports();
         return;
     }
     const res = await apiCall('get_report_data', {period_id: periodId});
@@ -3103,10 +3136,10 @@ async function loadReportPeriod(periodId){
         reportData = null;
         alert(res ? res.message : 'Rapor verisi alınamadı');
     }
-    showReports();
 }
 function generateReport(){
     const source = reportData || data;
+    const isAdmin = currentUser.role === 'admin';
     const cid=document.getElementById('rCourse').value;
     const sid=document.getElementById('rStudent').value, status=document.getElementById('rStatus').value,
     start=document.getElementById('rStart').value, end=document.getElementById('rEnd').value;
@@ -3146,7 +3179,7 @@ function generateReport(){
         ${absenceTotals.map(item => `<tr><td>${escapeHtml(item.course.name)}</td><td>${item.absent}</td><td>${item.excused}</td></tr>`).join('')}
         </table>
     </div>` : ''}
-    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`).join('<br><br>')}</div>` : ''}
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.${isAdmin ? `<div style="margin-top:6px;"><button class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.course.id},${item.student.id})">Onayla ve Kurstan Çıkar</button></div>` : ''}`).join('<br><br>')}</div>` : ''}
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
         const s=source.students.find(x=>x.id===a.studentId), c=source.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
