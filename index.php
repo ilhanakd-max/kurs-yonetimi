@@ -91,6 +91,35 @@ function migrate_attendance_statuses(PDO $pdo, int $periodId): void {
         ->execute([ATTENDANCE_STATUS_PRESENT, ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
 }
 
+function ensure_main_course_column(PDO $pdo, string $dbName): void {
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='courses' AND COLUMN_NAME='main_course_id'");
+    $stmt->execute([$dbName]);
+    if ((int)$stmt->fetchColumn() === 0) {
+        $pdo->exec("ALTER TABLE courses ADD COLUMN main_course_id INT(11) NULL AFTER id");
+    }
+    $pdo->exec("UPDATE courses SET main_course_id = id WHERE main_course_id IS NULL OR main_course_id = 0");
+}
+
+function get_course_main_id(PDO $pdo, int $courseId, int $periodId): ?int {
+    $stmt = $pdo->prepare("SELECT COALESCE(main_course_id, id) FROM courses WHERE id=? AND period_id=?");
+    $stmt->execute([$courseId, $periodId]);
+    $value = $stmt->fetchColumn();
+    return $value !== false ? (int)$value : null;
+}
+
+function get_course_group_ids(PDO $pdo, int $mainCourseId, int $periodId): array {
+    $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND COALESCE(main_course_id, id)=?");
+    $stmt->execute([$periodId, $mainCourseId]);
+    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
+function get_main_course_row(PDO $pdo, int $mainCourseId, int $periodId): ?array {
+    $stmt = $pdo->prepare("SELECT id, name, teacher_id FROM courses WHERE id=? AND period_id=?");
+    $stmt->execute([$mainCourseId, $periodId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
 function get_absence_counts(PDO $pdo, int $periodId): array {
     $stmt = $pdo->prepare("SELECT course_id, student_id,
         SUM(CASE WHEN status=? THEN 1 ELSE 0 END) AS absent_count,
@@ -293,6 +322,7 @@ $db_pass = 'TEST'; // PANEL ŞİFRENİZ
 try {
     $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    ensure_main_course_column($pdo, $db_name);
 } catch (PDOException $e) {
     die("Veritabanı hatası: " . $e->getMessage());
 }
@@ -458,6 +488,8 @@ if (isset($_GET['action'])) {
             $c['teacherId'] = $c['teacher_id'];
             $c['startDate'] = $c['start_date'] ?? null;
             $c['endDate'] = $c['end_date'] ?? null;
+            $c['mainCourseId'] = (int)($c['main_course_id'] ?? $c['id']);
+            $c['isMainCourse'] = $c['mainCourseId'] === (int)$c['id'];
             
             $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
             $c['modifications'] = json_decode($c['modifications']) ?: (object)[];
@@ -645,7 +677,28 @@ if (isset($_GET['action'])) {
         }
         
         if ($courseIdInt && $courseIdInt > 0 && !str_starts_with($courseIdStr, 'new')) {
-            $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=? WHERE id=? AND period_id=?";
+            $courseStmt = $pdo->prepare("SELECT id, name, teacher_id, COALESCE(main_course_id, id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
+            $courseStmt->execute([$courseIdInt, $activePeriodId]);
+            $currentCourse = $courseStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$currentCourse) {
+                json_response(['status' => 'error', 'message' => 'Kurs bulunamadı'], 404);
+            }
+            $currentMainId = (int)$currentCourse['main_course_id'];
+            $mainCourse = get_main_course_row($pdo, $currentMainId, $activePeriodId);
+            $mainCourseName = $mainCourse['name'] ?? $currentCourse['name'];
+            $mainCourseTeacherId = isset($mainCourse['teacher_id']) ? clean_int($mainCourse['teacher_id']) : null;
+            $isSession = $currentMainId !== $courseIdInt;
+            if ($isSession && $name === $mainCourseName && $teacherId !== $mainCourseTeacherId) {
+                json_response(['status' => 'error', 'message' => 'Öğretmen farklıysa kurs adı benzersiz olmalıdır. Lütfen kurs adını güncelleyin.'], 400);
+            }
+            $mainCourseIdToSave = $currentMainId;
+            if ($isSession && $name !== $mainCourseName) {
+                $mainCourseIdToSave = $courseIdInt;
+            }
+            if (!$mainCourseIdToSave) {
+                $mainCourseIdToSave = $courseIdInt;
+            }
+            $sql = "UPDATE courses SET name=?, color=?, day=?, time=?, building=?, classroom=?, teacher_id=?, start_date=?, end_date=?, cancelled_dates=?, modifications=?, main_course_id=? WHERE id=? AND period_id=?";
             $pdo->prepare($sql)->execute([
                 $name,
                 $color,
@@ -658,14 +711,27 @@ if (isset($_GET['action'])) {
                 $endDate,
                 $cancelled,
                 $mods,
+                $mainCourseIdToSave,
                 $courseIdInt,
                 $activePeriodId
             ]);
         } else {
             $baseCourseId = clean_int($c['baseCourseId'] ?? null);
+            $baseMainId = null;
+            $baseName = null;
+            if ($baseCourseId) {
+                $baseStmt = $pdo->prepare("SELECT id, name, COALESCE(main_course_id, id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
+                $baseStmt->execute([$baseCourseId, $activePeriodId]);
+                $baseRow = $baseStmt->fetch(PDO::FETCH_ASSOC);
+                if ($baseRow) {
+                    $baseMainId = (int)$baseRow['main_course_id'];
+                    $baseName = $baseRow['name'];
+                }
+            }
             try {
                 $pdo->beginTransaction();
-                $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications, period_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+                $mainCourseIdToSave = $baseMainId;
+                $sql = "INSERT INTO courses (name, color, day, time, building, classroom, teacher_id, start_date, end_date, cancelled_dates, modifications, period_id, main_course_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
                 $pdo->prepare($sql)->execute([
                     $name,
                     $color,
@@ -678,12 +744,18 @@ if (isset($_GET['action'])) {
                     $endDate,
                     $cancelled,
                     $mods,
-                    $activePeriodId
+                    $activePeriodId,
+                    $mainCourseIdToSave
                 ]);
                 $newCourseId = (int)$pdo->lastInsertId();
                 if ($baseCourseId) {
                     $copyStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) SELECT student_id, ?, period_id FROM student_courses WHERE course_id=? AND period_id=?");
                     $copyStmt->execute([$newCourseId, $baseCourseId, $activePeriodId]);
+                }
+                if (!$baseCourseId || !$baseMainId) {
+                    $pdo->prepare("UPDATE courses SET main_course_id=? WHERE id=? AND period_id=?")->execute([$newCourseId, $newCourseId, $activePeriodId]);
+                } elseif ($baseName !== null && $name !== $baseName) {
+                    $pdo->prepare("UPDATE courses SET main_course_id=? WHERE id=? AND period_id=?")->execute([$newCourseId, $newCourseId, $activePeriodId]);
                 }
                 $pdo->commit();
             } catch (Throwable $e) {
@@ -756,10 +828,23 @@ if (isset($_GET['action'])) {
         }
         $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=?")->execute([$sidInt, $activePeriodId]);
         if (!empty($s['courses']) && is_array($s['courses'])) {
-            $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
-            foreach($s['courses'] as $cid) {
+            $expandedCourseIds = [];
+            foreach ($s['courses'] as $cid) {
                 $cidInt = clean_int($cid);
-                if ($cidInt) {
+                if (!$cidInt) {
+                    continue;
+                }
+                $mainCourseId = get_course_main_id($pdo, $cidInt, $activePeriodId);
+                if ($mainCourseId) {
+                    $expandedCourseIds = array_merge($expandedCourseIds, get_course_group_ids($pdo, $mainCourseId, $activePeriodId));
+                } else {
+                    $expandedCourseIds[] = $cidInt;
+                }
+            }
+            $expandedCourseIds = array_values(array_unique(array_filter($expandedCourseIds)));
+            if ($expandedCourseIds) {
+                $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
+                foreach($expandedCourseIds as $cidInt) {
                     $insert->execute([$sidInt, $cidInt, $activePeriodId]);
                 }
             }
@@ -957,6 +1042,8 @@ if (isset($_GET['action'])) {
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach($courses as &$c) {
             $c['teacherId'] = $c['teacher_id'];
+            $c['mainCourseId'] = (int)($c['main_course_id'] ?? $c['id']);
+            $c['isMainCourse'] = $c['mainCourseId'] === (int)$c['id'];
             $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
             $c['modifications'] = json_decode($c['modifications']) ?: (object)[];
             unset($c['cancelled_dates'], $c['modifications_json']);
@@ -1084,7 +1171,13 @@ if (isset($_GET['action'])) {
             $stmt->execute([$name, $surname, $phone, $email, $tc, $dob, $education, $parentName, $parentPhone]);
             $studentId = (int)$pdo->lastInsertId();
             $pdo->prepare("INSERT INTO student_periods (student_id, period_id, reg_date) VALUES (?, ?, CURDATE())")->execute([$studentId, $activePeriodId]);
-            $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)")->execute([$studentId, $courseId, $activePeriodId]);
+            $mainCourseId = get_course_main_id($pdo, $courseId, $activePeriodId) ?? $courseId;
+            $courseGroupIds = get_course_group_ids($pdo, $mainCourseId, $activePeriodId);
+            $courseGroupIds = $courseGroupIds ?: [$courseId];
+            $enrollStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
+            foreach ($courseGroupIds as $groupCourseId) {
+                $enrollStmt->execute([$studentId, $groupCourseId, $activePeriodId]);
+            }
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -1105,11 +1198,19 @@ if (isset($_GET['action'])) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
-        $stmt = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
-        $stmt->execute([$studentId, $courseId, $activePeriodId]);
-        if (!$stmt->fetchColumn()) {
-            $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $studentId]);
-            $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)")->execute([$studentId, $courseId, $activePeriodId]);
+        $mainCourseId = get_course_main_id($pdo, $courseId, $activePeriodId) ?? $courseId;
+        $courseGroupIds = get_course_group_ids($pdo, $mainCourseId, $activePeriodId);
+        $courseGroupIds = $courseGroupIds ?: [$courseId];
+        $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $studentId]);
+        $stmt = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id=? AND period_id=?");
+        $stmt->execute([$studentId, $activePeriodId]);
+        $existingCourses = array_fill_keys($stmt->fetchAll(PDO::FETCH_COLUMN), true);
+        $insertStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
+        foreach ($courseGroupIds as $groupCourseId) {
+            if (isset($existingCourses[$groupCourseId])) {
+                continue;
+            }
+            $insertStmt->execute([$studentId, $groupCourseId, $activePeriodId]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -1135,21 +1236,30 @@ if (isset($_GET['action'])) {
             json_response(['status' => 'error', 'message' => 'Öğrenci seçiniz.'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $mainCourseId = get_course_main_id($pdo, $courseId, $activePeriodId) ?? $courseId;
+        $courseGroupIds = get_course_group_ids($pdo, $mainCourseId, $activePeriodId);
+        $courseGroupIds = $courseGroupIds ?: [$courseId];
         $placeholders = implode(',', array_fill(0, count($cleanStudentIds), '?'));
-        $params = array_merge([$courseId, $activePeriodId], $cleanStudentIds);
-        $stmt = $pdo->prepare("SELECT student_id FROM student_courses WHERE course_id=? AND period_id=? AND student_id IN ($placeholders)");
+        $params = array_merge([$activePeriodId], $cleanStudentIds);
+        $stmt = $pdo->prepare("SELECT student_id, course_id FROM student_courses WHERE period_id=? AND student_id IN ($placeholders)");
         $stmt->execute($params);
-        $existingIds = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
-        $existingLookup = array_fill_keys($existingIds ?: [], true);
-        $newIds = array_values(array_filter($cleanStudentIds, fn($sid) => empty($existingLookup[$sid])));
-        if ($newIds) {
+        $existingPairs = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $existingPairs[$row['student_id'] . '-' . $row['course_id']] = true;
+        }
+        if ($cleanStudentIds) {
             try {
                 $pdo->beginTransaction();
                 $periodStmt = $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) VALUES (?, ?, CURDATE())");
                 $courseStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
-                foreach ($newIds as $studentId) {
+                foreach ($cleanStudentIds as $studentId) {
                     $periodStmt->execute([$studentId, $activePeriodId]);
-                    $courseStmt->execute([$studentId, $courseId, $activePeriodId]);
+                    foreach ($courseGroupIds as $groupCourseId) {
+                        if (isset($existingPairs[$studentId . '-' . $groupCourseId])) {
+                            continue;
+                        }
+                        $courseStmt->execute([$studentId, $groupCourseId, $activePeriodId]);
+                    }
                 }
                 $pdo->commit();
             } catch (Throwable $e) {
@@ -1174,8 +1284,13 @@ if (isset($_GET['action'])) {
         require_course_access($pdo, $user, $courseId, $activePeriodId);
         try {
             $pdo->beginTransaction();
-            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
-            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            $mainCourseId = get_course_main_id($pdo, $courseId, $activePeriodId) ?? $courseId;
+            $courseGroupIds = get_course_group_ids($pdo, $mainCourseId, $activePeriodId);
+            $courseGroupIds = $courseGroupIds ?: [$courseId];
+            $placeholders = implode(',', array_fill(0, count($courseGroupIds), '?'));
+            $params = array_merge([$studentId, $activePeriodId], $courseGroupIds);
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)")->execute($params);
+            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)")->execute($params);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -1197,13 +1312,19 @@ if (isset($_GET['action'])) {
         if (!$courseId || !$studentId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        $courseCheck = $pdo->prepare("SELECT id FROM courses WHERE id=? AND period_id=?");
+        $courseCheck = $pdo->prepare("SELECT id, COALESCE(main_course_id, id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
         $courseCheck->execute([$courseId, $periodId]);
-        if (!$courseCheck->fetchColumn()) {
+        $courseRow = $courseCheck->fetch(PDO::FETCH_ASSOC);
+        if (!$courseRow) {
             json_response(['status' => 'error', 'message' => 'Kurs bulunamadı'], 404);
         }
-        $enrollmentCheck = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
-        $enrollmentCheck->execute([$studentId, $courseId, $periodId]);
+        $mainCourseId = (int)$courseRow['main_course_id'];
+        $courseGroupIds = get_course_group_ids($pdo, $mainCourseId, $periodId);
+        $courseGroupIds = $courseGroupIds ?: [$courseId];
+        $placeholders = implode(',', array_fill(0, count($courseGroupIds), '?'));
+        $params = array_merge([$studentId, $periodId], $courseGroupIds);
+        $enrollmentCheck = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)");
+        $enrollmentCheck->execute($params);
         if (!$enrollmentCheck->fetchColumn()) {
             echo json_encode(['status' => 'success', 'message' => 'Öğrenci zaten kurstan çıkarılmış.']);
             exit;
@@ -1215,16 +1336,18 @@ if (isset($_GET['action'])) {
         if ($threshold <= 0) {
             $threshold = 3;
         }
-        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND course_id=? AND student_id=? AND status=?");
-        $countStmt->execute([$periodId, $courseId, $studentId, ATTENDANCE_STATUS_ABSENT]);
+        $countParams = array_merge([$periodId, $studentId, ATTENDANCE_STATUS_ABSENT], $courseGroupIds);
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND student_id=? AND status=? AND course_id IN ($placeholders)");
+        $countStmt->execute($countParams);
         $absenceCount = (int)$countStmt->fetchColumn();
         if ($absenceCount < $threshold) {
             json_response(['status' => 'error', 'message' => 'Devamsızlık sınırı aşılmadı'], 400);
         }
         try {
             $pdo->beginTransaction();
-            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $periodId]);
-            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $periodId]);
+            $deleteParams = array_merge([$studentId, $periodId], $courseGroupIds);
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)")->execute($deleteParams);
+            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)")->execute($deleteParams);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -1396,6 +1519,8 @@ tr:nth-child(even){background:#f9f9f9}
 .dashboard-table th,.dashboard-table td{padding:8px;border:1px solid #ddd}
 .dashboard-table th{background:#1e3a5f;color:#fff}
 .dashboard-tag{display:inline-flex;align-items:center;gap:6px;font-size:0.8em;padding:4px 8px;border-radius:999px;background:#e3f2fd;color:#1e3a5f;font-weight:600}
+.course-badge{display:inline-flex;align-items:center;font-size:0.7em;padding:2px 8px;border-radius:999px;background:#e3f2fd;color:#1e3a5f;font-weight:600;margin-left:6px}
+.course-badge.session{background:#fff4d6;color:#8a5a00}
 .dashboard-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px}
 .chart-card{background:#f8f9fa;border-radius:8px;padding:12px;border:1px solid #e9ecef}
 .chart-card canvas{width:100%;height:180px}
@@ -1562,6 +1687,13 @@ async function refreshData(options = {}) {
     const res = await apiCall('get_all_data', null, range);
     if(res) {
         data = res;
+        if (data.courses && Array.isArray(data.courses)) {
+            data.courses = data.courses.map(course => ({
+                ...course,
+                mainCourseId: Number(course.mainCourseId ?? course.main_course_id ?? course.id),
+                isMainCourse: Boolean(course.isMainCourse ?? (Number(course.mainCourseId ?? course.main_course_id ?? course.id) === Number(course.id)))
+            }));
+        }
         if (data.attendance && Array.isArray(data.attendance)) {
             data.attendance = data.attendance.map(a => ({...a, status: Number(a.status)}));
         }
@@ -1765,6 +1897,40 @@ function formatDisplayRange(start, end, emptyStartLabel, emptyEndLabel){
     return '';
 }
 
+function getCourseMainId(course){
+    return Number(course?.mainCourseId ?? course?.main_course_id ?? course?.id);
+}
+
+function getCourseMainIdMap(source){
+    const map = new Map();
+    (source?.courses || []).forEach(course => {
+        map.set(Number(course.id), getCourseMainId(course));
+    });
+    return map;
+}
+
+function getMainCourseGroups(source){
+    const courses = source?.courses || [];
+    const courseMap = new Map(courses.map(c => [Number(c.id), c]));
+    const groups = new Map();
+    courses.forEach(course => {
+        const mainCourseId = getCourseMainId(course);
+        if(!groups.has(mainCourseId)) {
+            const mainCourse = courseMap.get(mainCourseId) || course;
+            groups.set(mainCourseId, {mainCourse, courseIds: []});
+        }
+        groups.get(mainCourseId).courseIds.push(Number(course.id));
+    });
+    return groups;
+}
+
+function getMainCourseList(source){
+    return Array.from(getMainCourseGroups(source).values()).map(group => ({
+        ...group.mainCourse,
+        sessionIds: group.courseIds
+    }));
+}
+
 function getDashboardCourseList(){
     const courses = data.courses || [];
     if(currentUser && currentUser.role === 'teacher') {
@@ -1821,14 +1987,16 @@ function getAbsenceDaysThreshold(){
 function getAbsenceCountsMap(source){
     const counts = source?.absenceCounts || [];
     const map = new Map();
+    const courseMainMap = getCourseMainIdMap(source);
     counts.forEach(row => {
         const courseId = Number(row.courseId);
         const studentId = Number(row.studentId);
-        const key = `${courseId}-${studentId}`;
-        map.set(key, {
-            absent: Number(row.absent) || 0,
-            excused: Number(row.excused) || 0
-        });
+        const mainCourseId = courseMainMap.get(courseId) ?? courseId;
+        const key = `${mainCourseId}-${studentId}`;
+        const existing = map.get(key) || {absent: 0, excused: 0};
+        existing.absent += Number(row.absent) || 0;
+        existing.excused += Number(row.excused) || 0;
+        map.set(key, existing);
     });
     return map;
 }
@@ -1837,51 +2005,63 @@ function getAbsenceWarnings(source, filters = {}){
     const threshold = getAbsenceDaysThreshold();
     const counts = source?.absenceCounts || [];
     const studentsMap = new Map((source?.students || []).map(s => [Number(s.id), s]));
-    const coursesMap = new Map((source?.courses || []).map(c => [Number(c.id), c]));
+    const mainCourses = getMainCourseList(source);
+    const coursesMap = new Map(mainCourses.map(c => [Number(c.id), c]));
     const courseFilterId = filters.courseId ? Number(filters.courseId) : null;
     const studentFilterId = filters.studentId ? Number(filters.studentId) : null;
     const teacherId = filters.teacherId ? Number(filters.teacherId) : null;
     const teacherCourseIds = teacherId
-        ? new Set((source?.courses || []).filter(c => Number(c.teacherId) === teacherId).map(c => Number(c.id)))
+        ? new Set(mainCourses.filter(c => Number(c.teacherId) === teacherId).map(c => Number(c.id)))
         : null;
+    const courseMainMap = getCourseMainIdMap(source);
+    const totals = new Map();
     const results = [];
     counts.forEach(row => {
         const courseId = Number(row.courseId);
+        const mainCourseId = courseMainMap.get(courseId) ?? courseId;
         const studentId = Number(row.studentId);
-        if(courseFilterId && courseId !== courseFilterId) return;
+        if(courseFilterId && mainCourseId !== courseFilterId) return;
         if(studentFilterId && studentId !== studentFilterId) return;
-        if(teacherCourseIds && !teacherCourseIds.has(courseId)) return;
-        const absent = Number(row.absent) || 0;
-        const excused = Number(row.excused) || 0;
-        if(absent < threshold) return;
-        const student = studentsMap.get(studentId);
-        const course = coursesMap.get(courseId);
+        if(teacherCourseIds && !teacherCourseIds.has(mainCourseId)) return;
+        const key = `${mainCourseId}-${studentId}`;
+        const entry = totals.get(key) || {absent: 0, excused: 0, mainCourseId, studentId};
+        entry.absent += Number(row.absent) || 0;
+        entry.excused += Number(row.excused) || 0;
+        totals.set(key, entry);
+    });
+    totals.forEach(entry => {
+        if(entry.absent < threshold) return;
+        const student = studentsMap.get(entry.studentId);
+        const course = coursesMap.get(entry.mainCourseId);
         if(!student || !course) return;
-        results.push({student, course, absent, excused});
+        results.push({student, course, absent: entry.absent, excused: entry.excused});
     });
     return results.sort((a, b) => (b.absent - a.absent));
 }
 
 function getCourseAbsenceTotals(source, filters = {}){
     const counts = source?.absenceCounts || [];
-    const coursesMap = new Map((source?.courses || []).map(c => [Number(c.id), c]));
+    const mainCourses = getMainCourseList(source);
+    const coursesMap = new Map(mainCourses.map(c => [Number(c.id), c]));
     const courseFilterId = filters.courseId ? Number(filters.courseId) : null;
     const studentFilterId = filters.studentId ? Number(filters.studentId) : null;
     const teacherId = filters.teacherId ? Number(filters.teacherId) : null;
     const teacherCourseIds = teacherId
-        ? new Set((source?.courses || []).filter(c => Number(c.teacherId) === teacherId).map(c => Number(c.id)))
+        ? new Set(mainCourses.filter(c => Number(c.teacherId) === teacherId).map(c => Number(c.id)))
         : null;
+    const courseMainMap = getCourseMainIdMap(source);
     const totals = new Map();
     counts.forEach(row => {
         const courseId = Number(row.courseId);
+        const mainCourseId = courseMainMap.get(courseId) ?? courseId;
         const studentId = Number(row.studentId);
-        if(courseFilterId && courseId !== courseFilterId) return;
+        if(courseFilterId && mainCourseId !== courseFilterId) return;
         if(studentFilterId && studentId !== studentFilterId) return;
-        if(teacherCourseIds && !teacherCourseIds.has(courseId)) return;
-        if(!totals.has(courseId)) {
-            totals.set(courseId, {absent: 0, excused: 0});
+        if(teacherCourseIds && !teacherCourseIds.has(mainCourseId)) return;
+        if(!totals.has(mainCourseId)) {
+            totals.set(mainCourseId, {absent: 0, excused: 0});
         }
-        const entry = totals.get(courseId);
+        const entry = totals.get(mainCourseId);
         entry.absent += Number(row.absent) || 0;
         entry.excused += Number(row.excused) || 0;
     });
@@ -1897,21 +2077,23 @@ function getCourseAbsenceTotals(source, filters = {}){
 function getAbsenceSummary(){
     const courseList = getDashboardCourseList();
     const courseIds = new Set(courseList.map(c => Number(c.id)));
+    const courseMainMap = getCourseMainIdMap(data);
     const stats = new Map();
     (data.attendance || []).forEach(a => {
         const courseId = Number(a.courseId);
         if(!courseIds.has(courseId)) return;
         const studentId = Number(a.studentId);
-        const key = `${courseId}-${studentId}`;
+        const mainCourseId = courseMainMap.get(courseId) ?? courseId;
+        const key = `${mainCourseId}-${studentId}`;
         if(!stats.has(key)) {
-            stats.set(key, {courseId, studentId, total: 0, absent: 0});
+            stats.set(key, {courseId: mainCourseId, studentId, total: 0, absent: 0});
         }
         const entry = stats.get(key);
         entry.total += 1;
         if(Number(a.status) === ATT_STATUS_ABSENT) entry.absent += 1;
     });
     const studentsMap = new Map((data.students || []).map(s => [Number(s.id), s]));
-    const coursesMap = new Map((data.courses || []).map(c => [Number(c.id), c]));
+    const coursesMap = new Map(getMainCourseList(data).map(c => [Number(c.id), c]));
     const thresholds = getAbsenceThresholds();
     const results = [];
     stats.forEach(entry => {
@@ -2413,13 +2595,17 @@ async function openAttendance(cid,ds){
     await ensureAttendanceRangeForView();
     const course=data.courses.find(c=>c.id==cid);
     if(!course)return;
+    const mainCourseId = getCourseMainId(course);
     const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
     const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
     const countsMap = getAbsenceCountsMap(data);
     const absenceThreshold = getAbsenceDaysThreshold();
-    const absenceWarnings = getAbsenceWarnings(data, {courseId: cid, teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
+    const absenceWarnings = getAbsenceWarnings(data, {courseId: mainCourseId, teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
     const canManage = currentUser.role === 'admin' || (currentUser.role === 'teacher' && course.teacherId == currentUser.id);
-    let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
+    const courseRelationTag = course.isMainCourse
+        ? '<span class="course-badge">Ana Kurs</span>'
+        : '<span class="course-badge session">Oturum</span>';
+    let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)} ${courseRelationTag}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
     ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`).join('<br><br>')}</div>` : ''}
     ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
@@ -2430,7 +2616,7 @@ async function openAttendance(cid,ds){
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        const counts = countsMap.get(`${cid}-${s.id}`) || {absent: 0, excused: 0};
+        const counts = countsMap.get(`${mainCourseId}-${s.id}`) || {absent: 0, excused: 0};
         const hasAbsenceWarning = counts.absent >= absenceThreshold;
         const warningTag = hasAbsenceWarning ? `<span style="color:#b00020;font-size:0.8em;margin-left:6px;">Devamsızlık Sınırını Aştı</span>` : '';
         html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>${warningTag}
@@ -2585,14 +2771,17 @@ function openStudentInfo(sid){
     if(!s) return;
     const countsMap = getAbsenceCountsMap(data);
     const absenceThreshold = getAbsenceDaysThreshold();
-    const courseNames = s.courses ? s.courses.map(cid => {
-        const c = data.courses.find(x => x.id == cid);
+    const courseMainMap = getCourseMainIdMap(data);
+    const mainCoursesMap = new Map(getMainCourseList(data).map(c => [Number(c.id), c]));
+    const mainCourseIds = new Set((s.courses || []).map(cid => courseMainMap.get(Number(cid)) ?? Number(cid)));
+    const courseNames = mainCourseIds.size ? Array.from(mainCourseIds).map(mainCourseId => {
+        const c = mainCoursesMap.get(mainCourseId);
         return c ? escapeHtml(c.name) : '';
     }).filter(Boolean).join(', ') : '';
-    const courseAbsenceSummary = s.courses ? s.courses.map(cid => {
-        const c = data.courses.find(x => x.id == cid);
+    const courseAbsenceSummary = mainCourseIds.size ? Array.from(mainCourseIds).map(mainCourseId => {
+        const c = mainCoursesMap.get(mainCourseId);
         if(!c) return '';
-        const counts = countsMap.get(`${cid}-${s.id}`) || {absent: 0, excused: 0};
+        const counts = countsMap.get(`${mainCourseId}-${s.id}`) || {absent: 0, excused: 0};
         const warning = counts.absent >= absenceThreshold
             ? ` - ${escapeHtml(s.name)} ${escapeHtml(s.surname)} (${escapeHtml(c.name)}) devamsızlık sayısı: ${counts.absent}. Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`
             : '';
@@ -2868,7 +3057,10 @@ function showCourses(){
     <tbody>`;
     data.courses.forEach(c=>{
         const t=data.teachers.find(x=>x.id==c.teacherId);
-        html+=`<tr data-building="${escapeAttr(c.building)}"><td>${escapeHtml(c.name)}</td><td><span style="display:inline-block;width:20px;height:20px;background:${sanitizeColor(c.color)};border:1px solid #ccc;border-radius:3px"></span></td>
+        const relationTag = c.isMainCourse
+            ? '<span class="course-badge">Ana Kurs</span>'
+            : '<span class="course-badge session">Oturum</span>';
+        html+=`<tr data-building="${escapeAttr(c.building)}"><td>${escapeHtml(c.name)} ${relationTag}</td><td><span style="display:inline-block;width:20px;height:20px;background:${sanitizeColor(c.color)};border:1px solid #ccc;border-radius:3px"></span></td>
         <td>${escapeHtml(c.day)}</td><td>${escapeHtml(c.time)}</td><td>${escapeHtml(c.building)}</td><td>${escapeHtml(c.classroom)}</td><td>${escapeHtml(t?.name||'-')}</td>
         <td><button class="btn btn-warning" onclick="editCourse(${c.id})">✏️</button>
         <button class="btn btn-primary" onclick="openCopyCourseModal(${c.id})">📋</button>
@@ -2956,11 +3148,14 @@ function showStudents(){
     
     // YENİ EKLENEN KISIM: Öğretmen Filtresi
     const isTeacher = currentUser.role === 'teacher';
-    let availableCourses = data.courses;
+    const mainCourses = getMainCourseList(data);
+    const courseMainMap = getCourseMainIdMap(data);
+    const mainCoursesMap = new Map(mainCourses.map(c => [Number(c.id), c]));
+    let availableCourses = mainCourses;
     
     // Eğer öğretmense sadece kendi kurslarını filtreye koyacağız
     if(isTeacher){
-        availableCourses = data.courses.filter(c => c.teacherId == currentUser.id);
+        availableCourses = mainCourses.filter(c => c.teacherId == currentUser.id);
     }
 
     let html=`<div class="card"><h2>👨‍🎓 Öğrenci Yönetimi</h2>
@@ -2976,12 +3171,21 @@ function showStudents(){
         // EĞER ÖĞRETMENSE VE BU ÖĞRENCİ ÖĞRETMENİN HİÇBİR KURSUNA KAYITLI DEĞİLSE TABLOYA EKLEME
         if(isTeacher) {
             // Öğrencinin aldığı kurslardan en az biri öğretmenin kursları içinde var mı?
-            const hasTeacherCourse = s.courses && s.courses.some(cid => availableCourses.find(ac => ac.id == cid));
+            const hasTeacherCourse = s.courses && s.courses.some(cid => {
+                const mainCourseId = courseMainMap.get(Number(cid)) ?? Number(cid);
+                return availableCourses.find(ac => ac.id == mainCourseId);
+            });
             if(!hasTeacherCourse) return;
         }
 
-        const courseNames = s.courses ? s.courses.map(cid => {const c = data.courses.find(x => x.id == cid); return c ? escapeHtml(c.name) : '';}).filter(n=>n).join(', ') : '';
-        const courseIds = s.courses ? s.courses.join(',') : '';
+        const mainCourseIds = new Set((s.courses || []).map(cid => courseMainMap.get(Number(cid)) ?? Number(cid)));
+        const courseNames = mainCourseIds.size
+            ? Array.from(mainCourseIds).map(mainCourseId => {
+                const c = mainCoursesMap.get(mainCourseId);
+                return c ? escapeHtml(c.name) : '';
+            }).filter(n=>n).join(', ')
+            : '';
+        const courseIds = mainCourseIds.size ? Array.from(mainCourseIds).join(',') : '';
         html+=`<tr data-courses="${escapeAttr(courseIds)}"><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.surname)}</td>
         <td>${escapeHtml(s.parent_name||'-')} (${escapeHtml(s.parent_phone||'-')})</td>
         <td>${escapeHtml(s.phone||'-')}</td>
@@ -3017,8 +3221,11 @@ function openStudentModal(s){
         <div class="form-group"><label>Veli Telefonu</label><input type="text" id="sParentPhone" value="${escapeAttr(s?.parent_phone||'')}"></div>
     </div>
     <div class="form-group"><label>Kurslar</label><div class="checkbox-group">`;
-    data.courses.forEach(c => {
-        const isChecked = s && s.courses && s.courses.includes(c.id);
+    const mainCourses = getMainCourseList(data);
+    const courseMainMap = getCourseMainIdMap(data);
+    const selectedMainIds = new Set((s?.courses || []).map(cid => courseMainMap.get(Number(cid)) ?? Number(cid)));
+    mainCourses.forEach(c => {
+        const isChecked = selectedMainIds.has(c.id);
         html += `<div class="checkbox-item"><input type="checkbox" name="courseSelect" value="${escapeAttr(c.id)}" ${isChecked ? 'checked' : ''}><span>${escapeHtml(c.name)}</span></div>`;
     });
     html+=`</div></div><button class="btn btn-primary" onclick="saveStudent(${s?.id||0})">${s?'Güncelle':'Kaydet'}</button>`;
@@ -3057,6 +3264,7 @@ async function deleteStudent(id){
 function showReports(){
     setActiveNav(getNavIndex('reports'));
     const source = reportData || data;
+    const mainCourses = getMainCourseList(source);
     const isTeacher = currentUser.role === 'teacher';
     const isAdmin = currentUser.role === 'admin';
     
@@ -3066,17 +3274,18 @@ function showReports(){
     let courseOptions = '<option value="">Tümü</option>';
     let studentOptions = '<option value="">Tümü</option>';
 
-    let availableCourses = source.courses;
+    let availableCourses = mainCourses;
     let availableStudents = source.students;
 
     if(isTeacher) {
         teacherSelect = `<select id="rTeacher" disabled><option value="${escapeAttr(currentUser.id)}">${escapeHtml(currentUser.name)}</option></select>`;
-        availableCourses = source.courses.filter(c => c.teacherId == currentUser.id);
+        availableCourses = mainCourses.filter(c => c.teacherId == currentUser.id);
         
         // Sadece bu kurslara kayıtlı öğrencileri bul
-        const teacherCourseIds = availableCourses.map(c => c.id);
+        const teacherCourseIds = new Set(availableCourses.map(c => c.id));
+        const courseMainMap = getCourseMainIdMap(source);
         availableStudents = source.students.filter(s => {
-            return s.courses && s.courses.some(cid => teacherCourseIds.includes(cid));
+            return s.courses && s.courses.some(cid => teacherCourseIds.has(courseMainMap.get(Number(cid)) ?? Number(cid)));
         });
 
     } else {
@@ -3093,7 +3302,7 @@ function showReports(){
     }
 
     let html=`<div class="card"><h2>📊 Raporlar</h2>
-    <div class="stats"><div class="stat-card"><h3>${source.courses.length}</h3><p>Toplam Kurs</p></div>
+    <div class="stats"><div class="stat-card"><h3>${mainCourses.length}</h3><p>Toplam Kurs</p></div>
     <div class="stat-card"><h3>${data.teachers.length}</h3><p>Öğretmen</p></div>
     <div class="stat-card"><h3>${source.students.length}</h3><p>Öğrenci</p></div>
     <div class="stat-card"><h3>${source.attendance.filter(a=>a.status===ATT_STATUS_ABSENT).length}</h3><p>Devamsızlık</p></div>
@@ -3128,7 +3337,11 @@ async function refreshReportData(periodId){
     if(res && res.status === 'success') {
         const normalizedAttendance = (res.attendance || []).map(a => ({...a, status: Number(a.status)}));
         reportData = {
-            courses: res.courses || [],
+            courses: (res.courses || []).map(course => ({
+                ...course,
+                mainCourseId: Number(course.mainCourseId ?? course.main_course_id ?? course.id),
+                isMainCourse: Boolean(course.isMainCourse ?? (Number(course.mainCourseId ?? course.main_course_id ?? course.id) === Number(course.id)))
+            })),
             students: res.students || [],
             attendance: normalizedAttendance,
             absenceCounts: res.absenceCounts || []
@@ -3141,6 +3354,8 @@ async function refreshReportData(periodId){
 function generateReport(){
     const source = reportData || data;
     const isAdmin = currentUser.role === 'admin';
+    const courseMainMap = getCourseMainIdMap(source);
+    const mainCoursesMap = new Map(getMainCourseList(source).map(c => [Number(c.id), c]));
     const cid=document.getElementById('rCourse').value;
     const sid=document.getElementById('rStudent').value, status=document.getElementById('rStatus').value,
     start=document.getElementById('rStart').value, end=document.getElementById('rEnd').value;
@@ -3157,15 +3372,15 @@ function generateReport(){
     }
 
     let filtered=source.attendance;
-    if(cid) filtered = filtered.filter(a => a.courseId == cid);
+    if(cid) filtered = filtered.filter(a => (courseMainMap.get(Number(a.courseId)) ?? Number(a.courseId)) == cid);
     if(sid) filtered = filtered.filter(a => a.studentId == sid);
     if(status) filtered = filtered.filter(a => a.status === Number(status));
     if(start) filtered = filtered.filter(a => a.date >= start);
     if(end) filtered = filtered.filter(a => a.date <= end);
     
     if(tid) { 
-        const teacherCourseIds = source.courses.filter(c => c.teacherId == tid).map(c => c.id); 
-        filtered = filtered.filter(a => teacherCourseIds.includes(parseInt(a.courseId))); 
+        const teacherCourseIds = getMainCourseList(source).filter(c => c.teacherId == tid).map(c => c.id); 
+        filtered = filtered.filter(a => teacherCourseIds.includes(courseMainMap.get(Number(a.courseId)) ?? Number(a.courseId))); 
     }
 
     const absent=filtered.filter(a=>a.status===ATT_STATUS_ABSENT), excused=filtered.filter(a=>a.status===ATT_STATUS_EXCUSED);
@@ -3183,7 +3398,8 @@ function generateReport(){
     ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.${isAdmin ? `<div style="margin-top:6px;"><button class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.course.id},${item.student.id})">Onayla ve Kurstan Çıkar</button></div>` : ''}`).join('<br><br>')}</div>` : ''}
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
-        const s=source.students.find(x=>x.id===a.studentId), c=source.courses.find(x=>x.id==a.courseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
+        const mainCourseId = courseMainMap.get(Number(a.courseId)) ?? Number(a.courseId);
+        const s=source.students.find(x=>x.id===a.studentId), c=mainCoursesMap.get(mainCourseId), t=c?data.teachers.find(tr=>tr.id==c.teacherId):null;
         let statusText='?';
         if(a.status===ATT_STATUS_PRESENT) statusText='<span style="color:green">✓ Geldi</span>';
         else if(a.status===ATT_STATUS_ABSENT) statusText='<span style="color:red">✗ Gelmedi</span>';
