@@ -1224,6 +1224,7 @@ if (isset($_GET['action'])) {
         try {
             $pdo->beginTransaction();
             $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $periodId]);
+            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $periodId]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -1231,7 +1232,7 @@ if (isset($_GET['action'])) {
             }
             throw $e;
         }
-        echo json_encode(['status'=>'success']); exit;
+        echo json_encode(['status' => 'success', 'success' => true]); exit;
     }
 
     if ($action === 'save_meta') {
