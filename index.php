@@ -131,12 +131,6 @@ function get_absence_counts(PDO $pdo, int $periodId): array {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function get_unexcused_absence_count(PDO $pdo, int $periodId, int $courseId, int $studentId): int {
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND course_id=? AND student_id=? AND status=?");
-    $stmt->execute([$periodId, $courseId, $studentId, ATTENDANCE_STATUS_ABSENT]);
-    return (int)$stmt->fetchColumn();
-}
-
 function parse_time_range_minutes(?string $timeRange): ?array {
     if (!$timeRange) {
         return null;
@@ -581,39 +575,12 @@ if (isset($_GET['action'])) {
         $response['classes'] = json_decode($meta['classes'] ?? '[]');
         $response['activePeriod'] = $activePeriod;
         $absenceCounts = get_absence_counts($pdo, $activePeriodId);
-        $absenceSummary = array_map(fn($row) => [
+        $response['absenceCounts'] = array_map(fn($row) => [
             'courseId' => (int)$row['course_id'],
             'studentId' => (int)$row['student_id'],
             'absent' => (int)$row['absent_count'],
-            'excused' => (int)$row['excused_count'],
-            'unexcused' => (int)$row['absent_count'],
-            'absence_warning' => (int)$row['absent_count'] > 3
+            'excused' => (int)$row['excused_count']
         ], $absenceCounts);
-        $response['absenceCounts'] = $absenceSummary;
-        $unexcusedMap = [];
-        foreach ($absenceCounts as $row) {
-            $studentId = (int)$row['student_id'];
-            $courseId = (int)$row['course_id'];
-            if (!isset($unexcusedMap[$studentId])) {
-                $unexcusedMap[$studentId] = [];
-            }
-            $unexcusedMap[$studentId][$courseId] = (int)$row['absent_count'];
-        }
-        foreach ($response['students'] as &$studentRow) {
-            $studentId = (int)($studentRow['id'] ?? 0);
-            $studentCourses = is_array($studentRow['courses'] ?? null) ? $studentRow['courses'] : [];
-            $unexcusedCounts = [];
-            $absenceWarnings = [];
-            foreach ($studentCourses as $courseId) {
-                $courseId = (int)$courseId;
-                $count = $unexcusedMap[$studentId][$courseId] ?? 0;
-                $unexcusedCounts[$courseId] = $count;
-                $absenceWarnings[$courseId] = $count > 3;
-            }
-            $studentRow['unexcused_counts'] = $unexcusedCounts;
-            $studentRow['absence_warnings'] = $absenceWarnings;
-        }
-        unset($studentRow);
         if (($user['role'] ?? '') === 'admin') {
             $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_deleted=0 ORDER BY is_active DESC, id DESC");
             $response['periods'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -1105,34 +1072,8 @@ if (isset($_GET['action'])) {
             'courseId' => (int)$row['course_id'],
             'studentId' => (int)$row['student_id'],
             'absent' => (int)$row['absent_count'],
-            'excused' => (int)$row['excused_count'],
-            'unexcused' => (int)$row['absent_count'],
-            'absence_warning' => (int)$row['absent_count'] > 3
+            'excused' => (int)$row['excused_count']
         ], $absenceCounts);
-        $unexcusedMap = [];
-        foreach ($absenceCounts as $row) {
-            $studentId = (int)$row['student_id'];
-            $courseId = (int)$row['course_id'];
-            if (!isset($unexcusedMap[$studentId])) {
-                $unexcusedMap[$studentId] = [];
-            }
-            $unexcusedMap[$studentId][$courseId] = (int)$row['absent_count'];
-        }
-        foreach ($students as &$studentRow) {
-            $studentId = (int)($studentRow['id'] ?? 0);
-            $studentCourses = is_array($studentRow['courses'] ?? null) ? $studentRow['courses'] : [];
-            $unexcusedCounts = [];
-            $absenceWarnings = [];
-            foreach ($studentCourses as $courseId) {
-                $courseId = (int)$courseId;
-                $count = $unexcusedMap[$studentId][$courseId] ?? 0;
-                $unexcusedCounts[$courseId] = $count;
-                $absenceWarnings[$courseId] = $count > 3;
-            }
-            $studentRow['unexcused_counts'] = $unexcusedCounts;
-            $studentRow['absence_warnings'] = $absenceWarnings;
-        }
-        unset($studentRow);
         echo json_encode(['status' => 'success', 'courses' => $courses, 'students' => $students, 'attendance' => $cleanAtt, 'absenceCounts' => $absenceSummary]);
         exit;
     }
