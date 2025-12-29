@@ -275,6 +275,9 @@ CREATE TABLE `student_courses` (
   `period_id` int(11) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+ALTER TABLE `student_courses`
+  ADD COLUMN `removed_at` date DEFAULT NULL;
+
 --
 -- Tablo döküm verisi `student_courses`
 --
