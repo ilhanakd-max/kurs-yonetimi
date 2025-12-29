@@ -757,14 +757,18 @@ ALTER TABLE `announcements`
 --
 ALTER TABLE `attendance`
   ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_attendance_period` (`period_id`);
+  ADD KEY `idx_attendance_period` (`period_id`),
+  ADD KEY `idx_attendance_student` (`student_id`),
+  ADD KEY `idx_attendance_course` (`course_id`),
+  ADD KEY `idx_attendance_date` (`date`);
 
 --
 -- Tablo için indeksler `courses`
 --
 ALTER TABLE `courses`
   ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_courses_period` (`period_id`);
+  ADD KEY `idx_courses_period` (`period_id`),
+  ADD KEY `idx_courses_main_course` (`main_course_id`);
 
 --
 -- Tablo için indeksler `course_periods`
@@ -795,7 +799,9 @@ ALTER TABLE `students`
 --
 ALTER TABLE `student_courses`
   ADD PRIMARY KEY (`student_id`,`course_id`,`period_id`),
-  ADD KEY `idx_student_courses_period` (`period_id`);
+  ADD KEY `idx_student_courses_period` (`period_id`),
+  ADD KEY `idx_student_courses_student` (`student_id`),
+  ADD KEY `idx_student_courses_course` (`course_id`);
 
 --
 -- Tablo için indeksler `student_periods`
