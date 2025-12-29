@@ -1315,6 +1315,7 @@ tr:nth-child(even){background:#f9f9f9}
 .attendance-actions{display:flex;gap:5px}
 .attendance-warning{background:#fff3cd;border:1px solid #ffeeba;border-radius:6px;padding:6px 10px;font-size:0.8em;color:#856404;display:flex;align-items:center;gap:10px}
 .attendance-warning button{background:transparent;border:none;color:#856404;font-size:1em;cursor:pointer;padding:0;line-height:1}
+.attendance-warning .warning-action{background:#856404;color:#fff;border-radius:4px;padding:2px 6px;font-size:0.75em}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
 .stat-card{background:linear-gradient(135deg,#1e3a5f,#2d5a87);color:#fff;padding:15px;border-radius:10px;text-align:center}
 .stat-card h3{font-size:1.8em}
@@ -1439,13 +1440,17 @@ function getAbsenceWarningKey(courseId, studentId) {
     return `${courseId}-${studentId}`;
 }
 
-function buildAbsenceWarningHtml(courseId, studentId, absenceCount) {
+function buildAbsenceWarningHtml(courseId, studentId, absenceCount, canManage, dateStr) {
     const key = getAbsenceWarningKey(courseId, studentId);
     if (absenceCount < ABSENCE_LIMIT || dismissedAbsenceWarnings.has(key)) {
         return '';
     }
+    const removeButton = canManage
+        ? `<button type="button" class="warning-action" onclick="removeStudentFromCourse(${courseId},${studentId},'${escapeAttr(dateStr)}')">Kurstan çıkar</button>`
+        : '';
     return `<div class="attendance-warning" data-absence-warning="${escapeAttr(key)}">
-        <span>This student has reached the ${ABSENCE_LIMIT}-day absenteeism limit.</span>
+        <span>Öğrenci ${ABSENCE_LIMIT} günlük devamsızlık limitine ulaştı.</span>
+        ${removeButton}
         <button type="button" onclick="dismissAbsenceWarning(${courseId},${studentId})">×</button>
     </div>`;
 }
@@ -1471,6 +1476,8 @@ async function loadCourseAbsenceCounts(courseId, force = false) {
 function refreshAbsenceWarningsInModal(courseId, ds) {
     const counts = courseAbsenceCounts.get(courseId) || {};
     const rows = document.querySelectorAll(`.attendance-item[data-course-id="${courseId}"][data-date="${ds}"]`);
+    const list = document.querySelector('.attendance-list');
+    const canManage = list ? list.dataset.canManage === '1' : false;
     rows.forEach((row) => {
         const sid = Number(row.dataset.studentId);
         const key = getAbsenceWarningKey(courseId, sid);
@@ -1480,7 +1487,7 @@ function refreshAbsenceWarningsInModal(courseId, ds) {
             if (!existing) {
                 const container = row.querySelector('.attendance-student');
                 if (container) {
-                    container.insertAdjacentHTML('beforeend', buildAbsenceWarningHtml(courseId, sid, absenceCount));
+                    container.insertAdjacentHTML('beforeend', buildAbsenceWarningHtml(courseId, sid, absenceCount, canManage, row.dataset.date));
                 }
             }
         } else if (existing) {
@@ -1927,11 +1934,11 @@ async function openAttendance(cid,ds){
         <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
         <button class="btn btn-info btn-sm" onclick="openAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">➕ Kayıtlı Öğrenci</button>
     </div>` : ''}
-    <div class="attendance-list" style="margin-top:15px">`;
+    <div class="attendance-list" data-can-manage="${canManage ? '1' : '0'}" style="margin-top:15px">`;
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        const warningHtml = buildAbsenceWarningHtml(cid, s.id, Number(absenceCounts[s.id] || 0));
+        const warningHtml = buildAbsenceWarningHtml(cid, s.id, Number(absenceCounts[s.id] || 0), canManage, ds);
         html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><div class="attendance-student"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>${warningHtml}</div>
         <div class="attendance-actions">
         <button type="button" class="btn ${present?.status===ATT_STATUS_PRESENT?'btn-success':'btn-secondary'}" data-att-status="${ATT_STATUS_PRESENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_PRESENT})">✓</button>
