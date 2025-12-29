@@ -4,6 +4,7 @@
  * - Enforced main_course_id grouping for course sessions and absence calculations.
  * - Added absence counting mode toggle and fixed warning text handling.
  * - Hardened student/course mutations with transactions and group-aware cleanup.
+ * - Added role-based absence limit banners with grouped items and server-side exceeded queries.
  */
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -164,6 +165,70 @@ function get_absence_counts(PDO $pdo, int $periodId): array {
         GROUP BY course_id, a.student_id";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function get_exceeded_absence_items(PDO $pdo, string $viewerRole, ?int $viewerTeacherId): array {
+    global $activePeriodId;
+    if (!$activePeriodId) {
+        return [];
+    }
+    if (!in_array($viewerRole, ['admin', 'teacher'], true)) {
+        return [];
+    }
+    if ($viewerRole === 'teacher' && !$viewerTeacherId) {
+        return [];
+    }
+    $threshold = 3;
+    $metaStmt = $pdo->prepare("SELECT item_value FROM meta_data WHERE item_key='absence_days_threshold' LIMIT 1");
+    $metaStmt->execute();
+    $thresholdValue = $metaStmt->fetchColumn();
+    if (is_numeric($thresholdValue)) {
+        $threshold = max(1, (int)$thresholdValue);
+    }
+    $absentExpression = ABSENCE_COUNT_MODE === 'sessions'
+        ? "SUM(CASE WHEN a.status=? THEN 1 ELSE 0 END)"
+        : "COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END)";
+    $sql = "SELECT
+        agg.group_id,
+        agg.group_id AS main_course_id,
+        mc.name AS course_name,
+        mc.teacher_id,
+        COALESCE(t.name, '') AS teacher_name,
+        s.id AS student_id,
+        TRIM(CONCAT(s.name, ' ', s.surname)) AS student_name,
+        agg.absent_count AS absence_count
+        FROM (
+            SELECT
+                COALESCE(NULLIF(c.main_course_id, 0), c.id) AS group_id,
+                a.student_id,
+                {$absentExpression} AS absent_count
+            FROM attendance a
+            INNER JOIN courses c ON c.id=a.course_id AND c.period_id=a.period_id
+            WHERE a.period_id=?
+            GROUP BY group_id, a.student_id
+        ) agg
+        INNER JOIN (
+            SELECT
+                sc.student_id,
+                COALESCE(NULLIF(c2.main_course_id, 0), c2.id) AS group_id
+            FROM student_courses sc
+            INNER JOIN courses c2 ON c2.id=sc.course_id AND c2.period_id=sc.period_id
+            WHERE sc.period_id=? AND sc.status=1
+            GROUP BY sc.student_id, group_id
+        ) active_sc ON active_sc.student_id=agg.student_id AND active_sc.group_id=agg.group_id
+        INNER JOIN courses mc ON mc.id=agg.group_id AND mc.period_id=?
+        INNER JOIN students s ON s.id=agg.student_id
+        LEFT JOIN teachers t ON t.id=mc.teacher_id
+        WHERE agg.absent_count >= ?";
+    $params = [ATTENDANCE_STATUS_ABSENT, $activePeriodId, $activePeriodId, $activePeriodId, $threshold];
+    if ($viewerRole === 'teacher') {
+        $sql .= " AND mc.teacher_id=?";
+        $params[] = $viewerTeacherId;
+    }
+    $sql .= " ORDER BY mc.name, s.name, s.surname";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
@@ -630,6 +695,11 @@ if (isset($_GET['action'])) {
             'absent' => (int)$row['absent_count'],
             'excused' => (int)$row['excused_count']
         ], $absenceCounts);
+        $response['absenceExceededItems'] = get_exceeded_absence_items(
+            $pdo,
+            $user['role'] ?? '',
+            ($user['role'] ?? '') === 'teacher' ? (int)($user['id'] ?? 0) : null
+        );
         if (($user['role'] ?? '') === 'admin') {
             $stmt = $pdo->query("SELECT id, name, start_date, end_date, is_active FROM course_periods WHERE is_deleted=0 ORDER BY is_active DESC, id DESC");
             $response['periods'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -1651,6 +1721,18 @@ tr:nth-child(even){background:#f9f9f9}
 .attendance-actions{display:flex;gap:5px}
 .absence-warning{display:inline-flex;align-items:center;gap:8px;background:#ffe0e0;color:#b00020;border:1px solid #f5c6cb;border-radius:6px;padding:4px 8px;font-size:0.8em;flex-wrap:wrap}
 .absence-warning button{background:transparent;border:none;color:#b00020;font-weight:bold;cursor:pointer;font-size:1em;line-height:1}
+.absence-limit-banner{background:#fff3cd;border:1px solid #ffeeba;border-left:4px solid #ffc107;border-radius:8px;padding:12px;margin:0 0 15px 0}
+.absence-limit-banner__header{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;color:#1e3a5f}
+.absence-limit-banner__close{background:transparent;border:none;color:#1e3a5f;font-size:1.1em;font-weight:bold;cursor:pointer}
+.absence-limit-banner__text{margin:0 0 10px 0;font-size:0.9em;color:#6b4d00}
+.absence-limit-banner__groups{display:flex;flex-direction:column;gap:10px}
+.absence-limit-banner__group-title{font-weight:600;color:#1e3a5f;margin-bottom:4px}
+.absence-limit-banner__list{margin:0;padding-left:18px;color:#6b4d00;font-size:0.85em}
+.absence-limit-banner__list li{margin-bottom:4px}
+.absence-limit-banner__list-item{cursor:pointer}
+.absence-limit-banner__list-item:focus{outline:2px solid #1e3a5f;outline-offset:2px;border-radius:4px}
+.absence-limit-banner__student{font-weight:600;color:#1e3a5f}
+.absence-limit-banner__count{margin-left:4px;color:#8a5a00}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
 .stat-card{background:linear-gradient(135deg,#1e3a5f,#2d5a87);color:#fff;padding:15px;border-radius:10px;text-align:center}
 .stat-card h3{font-size:1.8em}
@@ -1749,7 +1831,7 @@ const INITIAL_MOVABLE_HOLIDAYS=[
 {date:'2025-06-09',name:'Kurban Bayramı 4. Gün'}
 ];
 
-let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null,absenceCounts:[]};
+let data={users:[],teachers:[],courses:[],students:[],attendance:[],attendanceRange:null,holidays:[],buildings:[],classes:[],settings:{},announcements:[],announcementsAll:[],periods:[],activePeriod:null,absenceCounts:[],absenceExceededItems:[]};
 let reportData=null;
 let reportPeriodId=null;
 let currentUser=null;
@@ -1876,6 +1958,14 @@ async function refreshData(options = {}) {
         }
         data.attendanceRange = res.attendanceRange || range;
         data.absenceCounts = res.absenceCounts || [];
+        data.absenceExceededItems = (res.absenceExceededItems || []).map(item => ({
+            ...item,
+            group_id: Number(item.group_id),
+            main_course_id: Number(item.main_course_id),
+            teacher_id: item.teacher_id !== null ? Number(item.teacher_id) : null,
+            student_id: Number(item.student_id),
+            absence_count: Number(item.absence_count)
+        }));
         reportData = null;
         reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
@@ -2166,6 +2256,75 @@ function getAbsenceWarningText(){
     return 'This student has exceeded the absenteeism limit (3 days) for this course.';
 }
 
+const ABSENCE_LIMIT_BANNER_STORAGE_KEY = 'absence_limit_banner_dismissed';
+
+function getAbsenceLimitBannerKey(){
+    if(!currentUser) return ABSENCE_LIMIT_BANNER_STORAGE_KEY;
+    return `${ABSENCE_LIMIT_BANNER_STORAGE_KEY}_${currentUser.role}_${currentUser.id}`;
+}
+
+function isAbsenceLimitBannerDismissed(){
+    return sessionStorage.getItem(getAbsenceLimitBannerKey()) === '1';
+}
+
+function dismissAbsenceLimitBanner(button){
+    sessionStorage.setItem(getAbsenceLimitBannerKey(), '1');
+    const banner = button?.closest('.absence-limit-banner');
+    if(banner) banner.remove();
+}
+
+function getAbsenceLimitWarningText(){
+    return 'This student has exceeded the absenteeism limit (3 days) for this course.';
+}
+
+function openAbsenceLimitReport(groupId){
+    if(!groupId) return;
+    showReports();
+    const courseSelect = document.getElementById('rCourse');
+    if(courseSelect) {
+        courseSelect.value = String(groupId);
+    }
+    generateReport();
+}
+
+function getAbsenceLimitItems(source){
+    return Array.isArray(source?.absenceExceededItems) ? source.absenceExceededItems : [];
+}
+
+function buildAbsenceLimitBannerHtml(items){
+    if(!items.length || isAbsenceLimitBannerDismissed()) return '';
+    const warningText = getAbsenceLimitWarningText();
+    const grouped = new Map();
+    items.forEach(item => {
+        const groupId = Number(item.group_id);
+        if(!grouped.has(groupId)){
+            grouped.set(groupId, {courseName: item.course_name, teacherName: item.teacher_name, items: []});
+        }
+        grouped.get(groupId).items.push(item);
+    });
+    let html = `<div class="absence-limit-banner" role="alert">
+        <div class="absence-limit-banner__header">
+            <strong>Devamsızlık Uyarısı</strong>
+            <button type="button" class="absence-limit-banner__close" aria-label="Uyarıyı kapat" onclick="dismissAbsenceLimitBanner(this)">×</button>
+        </div>
+        <p class="absence-limit-banner__text">${escapeHtml(warningText)}</p>
+        <div class="absence-limit-banner__groups">`;
+    grouped.forEach((group, groupId) => {
+        const teacherLabel = group.teacherName ? ` | Öğretmen: ${escapeHtml(group.teacherName)}` : '';
+        html += `<div class="absence-limit-banner__group">
+            <div class="absence-limit-banner__group-title">${escapeHtml(group.courseName || 'Kurs')}${teacherLabel}</div>
+            <ul class="absence-limit-banner__list">
+                ${group.items.map(item => `<li class="absence-limit-banner__list-item" onclick="openAbsenceLimitReport(${escapeAttr(groupId)})" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAbsenceLimitReport(${escapeAttr(groupId)})}">
+                    <span class="absence-limit-banner__student">${escapeHtml(item.student_name)}</span>
+                    <span class="absence-limit-banner__count">(${escapeHtml(String(item.absence_count))})</span>
+                </li>`).join('')}
+            </ul>
+        </div>`;
+    });
+    html += `</div></div>`;
+    return html;
+}
+
 function getAbsenceCountsMap(source){
     const counts = source?.absenceCounts || [];
     const map = new Map();
@@ -2363,7 +2522,11 @@ function showDashboard(){
     const announcements = getVisibleAnnouncements();
     const thresholds = getAbsenceThresholds();
     const absenceDaysThreshold = getAbsenceDaysThreshold();
-    let html = `<div class="dashboard"><div class="dashboard-grid">`;
+    const absenceLimitItems = (currentUser.role === 'admin' || currentUser.role === 'teacher')
+        ? getAbsenceLimitItems(data)
+        : [];
+    const absenceLimitBanner = buildAbsenceLimitBannerHtml(absenceLimitItems);
+    let html = `<div class="dashboard">${absenceLimitBanner}<div class="dashboard-grid">`;
     html += `<div class="card dashboard-card">
         <h2>📌 Bugünkü Dersler</h2>`;
     if(todayCourses.length === 0){
@@ -2795,8 +2958,13 @@ async function openAttendance(cid,ds){
         ? '<span class="course-badge">Ana Kurs</span>'
         : '<span class="course-badge session">Oturum</span>';
     const warningText = getAbsenceWarningText();
+    const absenceLimitItems = (currentUser.role === 'admin' || currentUser.role === 'teacher')
+        ? getAbsenceLimitItems(data)
+        : [];
+    const absenceLimitBanner = buildAbsenceLimitBannerHtml(absenceLimitItems);
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)} ${courseRelationTag}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
+    ${absenceLimitBanner}
     ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)} <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
     ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
         <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
