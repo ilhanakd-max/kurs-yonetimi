@@ -447,9 +447,12 @@ if (isset($_GET['action'])) {
         $stmt->execute([$activePeriodId]);
         $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach($students as &$s) {
-            $stmt2 = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id = ? AND period_id=?");
+            $stmt2 = $pdo->prepare("SELECT course_id, removed_at FROM student_courses WHERE student_id = ? AND period_id=?");
             $stmt2->execute([$s['id'], $activePeriodId]);
-            $s['courses'] = $stmt2->fetchAll(PDO::FETCH_COLUMN);
+            $courseRows = $stmt2->fetchAll(PDO::FETCH_ASSOC);
+            $s['courses'] = array_map('intval', array_column(array_filter($courseRows, fn($row) => empty($row['removed_at'])), 'course_id'));
+            // Attendance panel needs removal metadata to hide students only after the removal date.
+            $s['courseMeta'] = array_map(fn($row) => ['courseId' => (int)$row['course_id'], 'removedAt' => $row['removed_at']], $courseRows);
         }
         $response['students'] = $students;
 
@@ -516,6 +519,26 @@ if (isset($_GET['action'])) {
             $cleanAtt[] = ['courseId' => (int)$a['course_id'], 'studentId' => (int)$a['student_id'], 'date' => $a['date'], 'status' => $normalizedStatus];
         }
         echo json_encode(['status' => 'success', 'attendance' => $cleanAtt, 'attendanceRange' => ['start' => $rangeStart, 'end' => $rangeEnd]]);
+        exit;
+    }
+
+    if ($action === 'get_course_absence_counts') {
+        if ($method !== 'POST') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $courseId = clean_int($data['courseId'] ?? null);
+        if (!$courseId) {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+        }
+        require_course_access($pdo, $user, $courseId, $activePeriodId);
+        $stmt = $pdo->prepare("SELECT student_id, COUNT(DISTINCT date) AS absence_count FROM attendance WHERE course_id=? AND period_id=? AND status=? GROUP BY student_id");
+        $stmt->execute([$courseId, $activePeriodId, ATTENDANCE_STATUS_ABSENT]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $counts = [];
+        foreach ($rows as $row) {
+            $counts[(int)$row['student_id']] = (int)$row['absence_count'];
+        }
+        echo json_encode(['status' => 'success', 'counts' => $counts]);
         exit;
     }
 
@@ -617,7 +640,7 @@ if (isset($_GET['action'])) {
                 ]);
                 $newCourseId = (int)$pdo->lastInsertId();
                 if ($baseCourseId) {
-                    $copyStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) SELECT student_id, ?, period_id FROM student_courses WHERE course_id=? AND period_id=?");
+                    $copyStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) SELECT student_id, ?, period_id FROM student_courses WHERE course_id=? AND period_id=? AND removed_at IS NULL");
                     $copyStmt->execute([$newCourseId, $baseCourseId, $activePeriodId]);
                 }
                 $pdo->commit();
@@ -971,6 +994,16 @@ if (isset($_GET['action'])) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
+        // Removed students should not appear in future attendance or be marked after removal.
+        $stmt = $pdo->prepare("SELECT removed_at FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
+        $stmt->execute([$studentId, $courseId, $activePeriodId]);
+        $courseRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$courseRow) {
+            json_response(['status' => 'error', 'message' => 'Öğrenci bu kursa kayıtlı değil.'], 400);
+        }
+        if (!empty($courseRow['removed_at']) && $date >= $courseRow['removed_at']) {
+            json_response(['status' => 'error', 'message' => 'Öğrenci bu kurstan kaldırıldığı için yoklama alınamaz.'], 400);
+        }
         $stmt = $pdo->prepare("SELECT id FROM attendance WHERE course_id=? AND student_id=? AND date=? AND period_id=?");
         $stmt->execute([$courseId, $studentId, $date, $activePeriodId]);
         $exist = $stmt->fetch();
@@ -1033,11 +1066,15 @@ if (isset($_GET['action'])) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
-        $stmt = $pdo->prepare("SELECT 1 FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
+        $stmt = $pdo->prepare("SELECT removed_at FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?");
         $stmt->execute([$studentId, $courseId, $activePeriodId]);
-        if (!$stmt->fetchColumn()) {
+        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$existing) {
             $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $studentId]);
             $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)")->execute([$studentId, $courseId, $activePeriodId]);
+        } elseif (!empty($existing['removed_at'])) {
+            $pdo->prepare("UPDATE student_courses SET removed_at=NULL WHERE student_id=? AND course_id=? AND period_id=?")
+                ->execute([$studentId, $courseId, $activePeriodId]);
         }
         echo json_encode(['status'=>'success']); exit;
     }
@@ -1065,14 +1102,27 @@ if (isset($_GET['action'])) {
         require_course_access($pdo, $user, $courseId, $activePeriodId);
         $placeholders = implode(',', array_fill(0, count($cleanStudentIds), '?'));
         $params = array_merge([$courseId, $activePeriodId], $cleanStudentIds);
-        $stmt = $pdo->prepare("SELECT student_id FROM student_courses WHERE course_id=? AND period_id=? AND student_id IN ($placeholders)");
+        $stmt = $pdo->prepare("SELECT student_id, removed_at FROM student_courses WHERE course_id=? AND period_id=? AND student_id IN ($placeholders)");
         $stmt->execute($params);
-        $existingIds = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
-        $existingLookup = array_fill_keys($existingIds ?: [], true);
+        $existingRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $existingLookup = [];
+        $reactivateIds = [];
+        foreach ($existingRows as $row) {
+            $existingLookup[(int)$row['student_id']] = true;
+            if (!empty($row['removed_at'])) {
+                $reactivateIds[] = (int)$row['student_id'];
+            }
+        }
         $newIds = array_values(array_filter($cleanStudentIds, fn($sid) => empty($existingLookup[$sid])));
-        if ($newIds) {
+        if ($newIds || $reactivateIds) {
             try {
                 $pdo->beginTransaction();
+                if ($reactivateIds) {
+                    $reactivatePlaceholders = implode(',', array_fill(0, count($reactivateIds), '?'));
+                    $reactivateParams = array_merge([$courseId, $activePeriodId], $reactivateIds);
+                    $pdo->prepare("UPDATE student_courses SET removed_at=NULL WHERE course_id=? AND period_id=? AND student_id IN ($reactivatePlaceholders)")
+                        ->execute($reactivateParams);
+                }
                 $periodStmt = $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) VALUES (?, ?, CURDATE())");
                 $courseStmt = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
                 foreach ($newIds as $studentId) {
@@ -1096,14 +1146,16 @@ if (isset($_GET['action'])) {
         }
         $courseId = clean_int($data['courseId'] ?? null);
         $studentId = clean_int($data['studentId'] ?? null);
+        $removalDate = clean_date($data['date'] ?? null) ?? date('Y-m-d');
         if (!$courseId || !$studentId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
         require_course_access($pdo, $user, $courseId, $activePeriodId);
         try {
             $pdo->beginTransaction();
-            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
-            $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND course_id=? AND period_id=?")->execute([$studentId, $courseId, $activePeriodId]);
+            // Soft removal keeps past attendance records intact while hiding the student in future sessions.
+            $pdo->prepare("UPDATE student_courses SET removed_at = CASE WHEN removed_at IS NULL OR removed_at > ? THEN ? ELSE removed_at END WHERE student_id=? AND course_id=? AND period_id=?")
+                ->execute([$removalDate, $removalDate, $studentId, $courseId, $activePeriodId]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -1259,7 +1311,10 @@ tr:nth-child(even){background:#f9f9f9}
 .view-toggle{display:flex;gap:5px}
 .attendance-list{max-height:300px;overflow-y:auto}
 .attendance-item{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #eee;flex-wrap: wrap; gap:10px;}
+.attendance-student{display:flex;flex-direction:column;gap:6px}
 .attendance-actions{display:flex;gap:5px}
+.attendance-warning{background:#fff3cd;border:1px solid #ffeeba;border-radius:6px;padding:6px 10px;font-size:0.8em;color:#856404;display:flex;align-items:center;gap:10px}
+.attendance-warning button{background:transparent;border:none;color:#856404;font-size:1em;cursor:pointer;padding:0;line-height:1}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
 .stat-card{background:linear-gradient(135deg,#1e3a5f,#2d5a87);color:#fff;padding:15px;border-radius:10px;text-align:center}
 .stat-card h3{font-size:1.8em}
@@ -1327,6 +1382,7 @@ const DAYS=['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Paz
 const ATT_STATUS_PRESENT = 1;
 const ATT_STATUS_ABSENT = 2;
 const ATT_STATUS_EXCUSED = 3;
+const ABSENCE_LIMIT = 3;
 const ATT_STATUS_LABELS = {
     [ATT_STATUS_PRESENT]: 'Geldi',
     [ATT_STATUS_ABSENT]: 'Gelmedi',
@@ -1347,6 +1403,9 @@ let currentViewDate=new Date();
 let viewMode = 'week'; 
 let currentBuildingFilter = localStorage.getItem('lastBuilding') || "";
 let currentCustomRange = {start: '', end: ''};
+// Absence warning state is kept in-memory so dismissed warnings stay hidden until refresh.
+const dismissedAbsenceWarnings = new Set();
+const courseAbsenceCounts = new Map();
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -1360,6 +1419,74 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
     return escapeHtml(value);
+}
+
+function isStudentActiveForCourseOnDate(student, courseId, dateStr) {
+    if (student.courseMeta && Array.isArray(student.courseMeta)) {
+        const relation = student.courseMeta.find((row) => Number(row.courseId) === Number(courseId));
+        if (!relation) {
+            return false;
+        }
+        if (!relation.removedAt) {
+            return true;
+        }
+        return relation.removedAt > dateStr;
+    }
+    return student.courses && student.courses.includes(parseInt(courseId));
+}
+
+function getAbsenceWarningKey(courseId, studentId) {
+    return `${courseId}-${studentId}`;
+}
+
+function buildAbsenceWarningHtml(courseId, studentId, absenceCount) {
+    const key = getAbsenceWarningKey(courseId, studentId);
+    if (absenceCount < ABSENCE_LIMIT || dismissedAbsenceWarnings.has(key)) {
+        return '';
+    }
+    return `<div class="attendance-warning" data-absence-warning="${escapeAttr(key)}">
+        <span>This student has reached the ${ABSENCE_LIMIT}-day absenteeism limit.</span>
+        <button type="button" onclick="dismissAbsenceWarning(${courseId},${studentId})">×</button>
+    </div>`;
+}
+
+function dismissAbsenceWarning(courseId, studentId) {
+    const key = getAbsenceWarningKey(courseId, studentId);
+    dismissedAbsenceWarnings.add(key);
+    document.querySelectorAll(`[data-absence-warning="${key}"]`).forEach((node) => node.remove());
+}
+
+async function loadCourseAbsenceCounts(courseId, force = false) {
+    if (!force && courseAbsenceCounts.has(courseId)) {
+        return courseAbsenceCounts.get(courseId);
+    }
+    const res = await apiCall('get_course_absence_counts', {courseId});
+    if (res && res.status === 'success') {
+        courseAbsenceCounts.set(courseId, res.counts || {});
+        return courseAbsenceCounts.get(courseId);
+    }
+    return {};
+}
+
+function refreshAbsenceWarningsInModal(courseId, ds) {
+    const counts = courseAbsenceCounts.get(courseId) || {};
+    const rows = document.querySelectorAll(`.attendance-item[data-course-id="${courseId}"][data-date="${ds}"]`);
+    rows.forEach((row) => {
+        const sid = Number(row.dataset.studentId);
+        const key = getAbsenceWarningKey(courseId, sid);
+        const absenceCount = Number(counts[sid] || 0);
+        const existing = row.querySelector('.attendance-warning');
+        if (absenceCount >= ABSENCE_LIMIT && !dismissedAbsenceWarnings.has(key)) {
+            if (!existing) {
+                const container = row.querySelector('.attendance-student');
+                if (container) {
+                    container.insertAdjacentHTML('beforeend', buildAbsenceWarningHtml(courseId, sid, absenceCount));
+                }
+            }
+        } else if (existing) {
+            existing.remove();
+        }
+    });
 }
 
 function getServerNow() {
@@ -1790,7 +1917,8 @@ async function openAttendance(cid,ds){
     await ensureAttendanceRangeForView();
     const course=data.courses.find(c=>c.id==cid);
     if(!course)return;
-    const students=data.students.filter(s=>s.courses && s.courses.includes(parseInt(cid)));
+    const absenceCounts = await loadCourseAbsenceCounts(cid, true);
+    const students=data.students.filter(s=>isStudentActiveForCourseOnDate(s, cid, ds));
     const att=data.attendance.filter(a=>a.courseId==cid&&a.date===ds);
     const canManage = currentUser.role === 'admin' || (currentUser.role === 'teacher' && course.teacherId == currentUser.id);
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
@@ -1803,7 +1931,8 @@ async function openAttendance(cid,ds){
     if(students.length===0)html+=`<p style="color:#888">Bu kursa kayıtlı öğrenci yok.</p>`;
     students.forEach(s=>{
         const present=att.find(a=>a.studentId===s.id);
-        html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>
+        const warningHtml = buildAbsenceWarningHtml(cid, s.id, Number(absenceCounts[s.id] || 0));
+        html+=`<div class="attendance-item" data-course-id="${escapeAttr(cid)}" data-date="${escapeAttr(ds)}" data-student-id="${escapeAttr(s.id)}"><div class="attendance-student"><span style="cursor:pointer;text-decoration:underline" onclick="openStudentInfo(${s.id})">${escapeHtml(s.name)} ${escapeHtml(s.surname)}</span>${warningHtml}</div>
         <div class="attendance-actions">
         <button type="button" class="btn ${present?.status===ATT_STATUS_PRESENT?'btn-success':'btn-secondary'}" data-att-status="${ATT_STATUS_PRESENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_PRESENT})">✓</button>
         <button type="button" class="btn ${present?.status===ATT_STATUS_ABSENT?'btn-danger':'btn-secondary'}" data-att-status="${ATT_STATUS_ABSENT}" onclick="markAttendance(event,${cid},'${escapeAttr(ds)}',${s.id},${ATT_STATUS_ABSENT})">✗</button>
@@ -1913,7 +2042,7 @@ async function saveAttendanceExistingStudentsBulk(cid,ds){
 
 async function removeStudentFromCourse(cid,sid,ds){
     if(!confirm('Öğrenciyi bu kurstan kaldırmak istiyor musunuz?')) return;
-    const res = await apiCall('remove_course_student', {courseId: cid, studentId: sid});
+    const res = await apiCall('remove_course_student', {courseId: cid, studentId: sid, date: ds});
     if(res && res.status === 'success') {
         await refreshData({skipRender: true});
         openAttendance(cid,ds);
@@ -1982,7 +2111,9 @@ async function markAttendance(event, cid, ds, sid, status){
     const res = await apiCall('save_attendance', {courseId:cid, date:ds, studentId:sid, status:status});
     if (res && res.status === 'success') {
         await refreshData({skipRender: true});
+        await loadCourseAbsenceCounts(cid, true);
         updateAttendanceButtonState(cid, ds, sid, status);
+        refreshAbsenceWarningsInModal(cid, ds);
     }
 }
 async function cancelCourse(cid,ds){
