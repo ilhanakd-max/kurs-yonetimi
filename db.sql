@@ -273,7 +273,9 @@ INSERT INTO `students` (`id`, `name`, `surname`, `phone`, `email`, `tc`, `reg_da
 CREATE TABLE `student_courses` (
   `student_id` int(11) NOT NULL,
   `course_id` int(11) NOT NULL,
-  `period_id` int(11) NOT NULL DEFAULT 1
+  `period_id` int(11) NOT NULL DEFAULT 1,
+  `status` tinyint(1) NOT NULL DEFAULT 1,
+  `removed_at` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
