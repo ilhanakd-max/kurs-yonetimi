@@ -114,17 +114,63 @@ function ensure_student_course_status_columns(PDO $pdo, string $dbName): void {
     $pdo->exec("UPDATE student_courses SET status = 1 WHERE status IS NULL");
 }
 
-function get_course_main_id(PDO $pdo, int $courseId, int $periodId): ?int {
-    $stmt = $pdo->prepare("SELECT COALESCE(main_course_id, id) FROM courses WHERE id=? AND period_id=?");
+function get_course_identity_context(PDO $pdo, int $courseId, int $periodId): ?array {
+    $stmt = $pdo->prepare("SELECT id, name, COALESCE(main_course_id, id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
     $stmt->execute([$courseId, $periodId]);
-    $value = $stmt->fetchColumn();
-    return $value !== false ? (int)$value : null;
+    $course = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$course) {
+        return null;
+    }
+    $mainCourseId = (int)$course['main_course_id'];
+    $name = (string)$course['name'];
+    $mainCountStmt = $pdo->prepare("SELECT COUNT(*) FROM courses WHERE period_id=? AND COALESCE(main_course_id, id)=?");
+    $mainCountStmt->execute([$periodId, $mainCourseId]);
+    $mainCount = (int)$mainCountStmt->fetchColumn();
+    $nameStatsStmt = $pdo->prepare("SELECT COUNT(*) AS cnt, MIN(id) AS min_id FROM courses WHERE period_id=? AND name=?");
+    $nameStatsStmt->execute([$periodId, $name]);
+    $nameStats = $nameStatsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $nameCount = (int)($nameStats['cnt'] ?? 0);
+    $nameMinId = (int)($nameStats['min_id'] ?? $courseId);
+    return [
+        'id' => (int)$course['id'],
+        'name' => $name,
+        'main_course_id' => $mainCourseId,
+        'main_count' => $mainCount,
+        'name_count' => $nameCount,
+        'name_min_id' => $nameMinId
+    ];
 }
 
-function get_course_group_ids(PDO $pdo, int $mainCourseId, int $periodId): array {
-    $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND COALESCE(main_course_id, id)=?");
-    $stmt->execute([$periodId, $mainCourseId]);
-    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+function get_course_main_id(PDO $pdo, int $courseId, int $periodId): ?int {
+    $context = get_course_identity_context($pdo, $courseId, $periodId);
+    if (!$context) {
+        return null;
+    }
+    if (($context['main_count'] ?? 0) > 1) {
+        return (int)$context['main_course_id'];
+    }
+    if (($context['name_count'] ?? 0) > 1) {
+        return (int)$context['name_min_id'];
+    }
+    return (int)$context['id'];
+}
+
+function get_course_group_ids(PDO $pdo, int $courseId, int $periodId): array {
+    $context = get_course_identity_context($pdo, $courseId, $periodId);
+    if (!$context) {
+        return [];
+    }
+    if (($context['main_count'] ?? 0) > 1) {
+        $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND COALESCE(main_course_id, id)=?");
+        $stmt->execute([$periodId, $context['main_course_id']]);
+        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+    if (($context['name_count'] ?? 0) > 1) {
+        $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND name=?");
+        $stmt->execute([$periodId, $context['name']]);
+        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+    return [(int)$context['id']];
 }
 
 function get_main_course_row(PDO $pdo, int $mainCourseId, int $periodId): ?array {
@@ -135,15 +181,66 @@ function get_main_course_row(PDO $pdo, int $mainCourseId, int $periodId): ?array
 }
 
 function get_absence_counts(PDO $pdo, int $periodId): array {
-    // Devamsızlık günlerini kurs bazında benzersiz tarihlerle hesaplıyoruz.
-    $stmt = $pdo->prepare("SELECT course_id, student_id,
-        COUNT(DISTINCT CASE WHEN status=? THEN date END) AS absent_count,
-        COUNT(DISTINCT CASE WHEN status=? THEN date END) AS excused_count
-        FROM attendance
-        WHERE period_id=?
-        GROUP BY course_id, student_id");
-    $stmt->execute([ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
+    // Devamsızlık günlerini kurs kimliğine göre benzersiz tarihlerle hesaplıyoruz.
+    $sql = "SELECT
+        CASE
+            WHEN main_group.cnt > 1 THEN main_group.main_course_id
+            WHEN name_group.cnt > 1 THEN name_group.min_id
+            ELSE c.id
+        END AS course_id,
+        a.student_id,
+        COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END) AS absent_count,
+        COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END) AS excused_count
+        FROM attendance a
+        INNER JOIN courses c ON c.id=a.course_id AND c.period_id=a.period_id
+        LEFT JOIN (
+            SELECT COALESCE(main_course_id, id) AS main_course_id, COUNT(*) AS cnt
+            FROM courses
+            WHERE period_id=?
+            GROUP BY main_course_id
+        ) AS main_group ON main_group.main_course_id = COALESCE(c.main_course_id, c.id)
+        LEFT JOIN (
+            SELECT name, MIN(id) AS min_id, COUNT(*) AS cnt
+            FROM courses
+            WHERE period_id=?
+            GROUP BY name
+        ) AS name_group ON name_group.name = c.name
+        WHERE a.period_id=?
+        GROUP BY course_id, a.student_id";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId, $periodId, $periodId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function build_course_logical_map(array $courses): array {
+    $mainCounts = [];
+    $nameCounts = [];
+    $nameMinIds = [];
+    foreach ($courses as $course) {
+        $courseId = (int)($course['id'] ?? 0);
+        $mainCourseId = (int)($course['main_course_id'] ?? $courseId);
+        $name = (string)($course['name'] ?? '');
+        $mainCounts[$mainCourseId] = ($mainCounts[$mainCourseId] ?? 0) + 1;
+        $nameCounts[$name] = ($nameCounts[$name] ?? 0) + 1;
+        if (!isset($nameMinIds[$name]) || $courseId < $nameMinIds[$name]) {
+            $nameMinIds[$name] = $courseId;
+        }
+    }
+    $map = [];
+    foreach ($courses as $course) {
+        $courseId = (int)($course['id'] ?? 0);
+        $mainCourseId = (int)($course['main_course_id'] ?? $courseId);
+        $name = (string)($course['name'] ?? '');
+        if (($mainCounts[$mainCourseId] ?? 0) > 1) {
+            $logicalId = $mainCourseId;
+        } elseif (($nameCounts[$name] ?? 0) > 1) {
+            $logicalId = $nameMinIds[$name] ?? $courseId;
+        } else {
+            $logicalId = $courseId;
+        }
+        $map[$courseId] = $logicalId;
+    }
+    return $map;
 }
 
 function parse_time_range_minutes(?string $timeRange): ?array {
@@ -499,12 +596,13 @@ if (isset($_GET['action'])) {
         $stmt = $pdo->prepare("SELECT * FROM courses WHERE period_id=?");
         $stmt->execute([$activePeriodId]);
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $logicalMap = build_course_logical_map($courses);
         foreach($courses as &$c) {
             // JS uyumluluğu için teacherId alanını ekliyoruz
             $c['teacherId'] = $c['teacher_id'];
             $c['startDate'] = $c['start_date'] ?? null;
             $c['endDate'] = $c['end_date'] ?? null;
-            $c['mainCourseId'] = (int)($c['main_course_id'] ?? $c['id']);
+            $c['mainCourseId'] = (int)($logicalMap[$c['id']] ?? ($c['main_course_id'] ?? $c['id']));
             $c['isMainCourse'] = $c['mainCourseId'] === (int)$c['id'];
             
             $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
@@ -1056,9 +1154,10 @@ if (isset($_GET['action'])) {
         $stmt = $pdo->prepare("SELECT * FROM courses WHERE period_id=?");
         $stmt->execute([$periodId]);
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $logicalMap = build_course_logical_map($courses);
         foreach($courses as &$c) {
             $c['teacherId'] = $c['teacher_id'];
-            $c['mainCourseId'] = (int)($c['main_course_id'] ?? $c['id']);
+            $c['mainCourseId'] = (int)($logicalMap[$c['id']] ?? ($c['main_course_id'] ?? $c['id']));
             $c['isMainCourse'] = $c['mainCourseId'] === (int)$c['id'];
             $c['cancelledDates'] = json_decode($c['cancelled_dates']) ?: [];
             $c['modifications'] = json_decode($c['modifications']) ?: (object)[];
@@ -1350,13 +1449,13 @@ if (isset($_GET['action'])) {
         if (!$courseId || !$studentId) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        $courseCheck = $pdo->prepare("SELECT id, COALESCE(main_course_id, id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
+        $courseCheck = $pdo->prepare("SELECT id FROM courses WHERE id=? AND period_id=?");
         $courseCheck->execute([$courseId, $periodId]);
         $courseRow = $courseCheck->fetch(PDO::FETCH_ASSOC);
         if (!$courseRow) {
             json_response(['status' => 'error', 'message' => 'Kurs bulunamadı'], 404);
         }
-        $mainCourseId = (int)$courseRow['main_course_id'];
+        $mainCourseId = get_course_main_id($pdo, $courseId, $periodId) ?? $courseId;
         $courseGroupIds = get_course_group_ids($pdo, $mainCourseId, $periodId);
         $courseGroupIds = $courseGroupIds ?: [$courseId];
         $placeholders = implode(',', array_fill(0, count($courseGroupIds), '?'));
@@ -2027,6 +2126,42 @@ function getAbsenceDaysThreshold(){
     return Math.round(raw);
 }
 
+const ABSENCE_WARNING_STORAGE_KEY = 'dismissedAbsenceWarnings';
+
+function getDismissedAbsenceWarnings(){
+    try {
+        const stored = JSON.parse(sessionStorage.getItem(ABSENCE_WARNING_STORAGE_KEY) || '[]');
+        return new Set(Array.isArray(stored) ? stored : []);
+    } catch (error) {
+        return new Set();
+    }
+}
+
+function setAbsenceWarningDismissed(courseId, studentId){
+    if(!courseId || !studentId) return;
+    const key = `${courseId}-${studentId}`;
+    const dismissed = getDismissedAbsenceWarnings();
+    dismissed.add(key);
+    sessionStorage.setItem(ABSENCE_WARNING_STORAGE_KEY, JSON.stringify(Array.from(dismissed)));
+}
+
+function isAbsenceWarningDismissed(courseId, studentId){
+    if(!courseId || !studentId) return false;
+    const key = `${courseId}-${studentId}`;
+    return getDismissedAbsenceWarnings().has(key);
+}
+
+function dismissAbsenceWarningByIds(courseId, studentId, button){
+    setAbsenceWarningDismissed(courseId, studentId);
+    const row = button?.closest('tr') || button?.closest('.absence-warning');
+    if(row) row.remove();
+}
+
+function getAbsenceWarningText(){
+    const days = getAbsenceDaysThreshold();
+    return `This student has exceeded the absenteeism limit (${days} days) for this course.`;
+}
+
 function getAbsenceCountsMap(source){
     const counts = source?.absenceCounts || [];
     const map = new Map();
@@ -2080,6 +2215,7 @@ function getAbsenceWarnings(source, filters = {}){
         // Uyarıyı sadece öğrencinin ilgili kursta aktif kaydı varsa gösteriyoruz.
         const studentCourseMainIds = new Set((student.courses || []).map(cid => courseMainMap.get(Number(cid)) ?? Number(cid)));
         if (!studentCourseMainIds.has(entry.mainCourseId)) return;
+        if (isAbsenceWarningDismissed(entry.mainCourseId, entry.studentId)) return;
         results.push({student, course, absent: entry.absent, excused: entry.excused});
     });
     return results.sort((a, b) => (b.absent - a.absent));
@@ -2219,6 +2355,7 @@ function showDashboard(){
     const todayCourses = getDashboardCoursesForDate(today);
     const absenceSummary = getAbsenceSummary();
     const absenceWarnings = getAbsenceWarnings(data, {teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
+    const warningText = getAbsenceWarningText();
     const announcements = getVisibleAnnouncements();
     const thresholds = getAbsenceThresholds();
     const absenceDaysThreshold = getAbsenceDaysThreshold();
@@ -2285,7 +2422,9 @@ function showDashboard(){
                 <td>${escapeHtml(studentName)}</td>
                 <td>${escapeHtml(item.course.name)}</td>
                 <td>${item.absent}</td>
-                <td>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.</td>
+                <td>${escapeHtml(warningText)} Kurstan çıkarılması için admin onayı gereklidir.
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>
+                </td>
             </tr>`;
         });
         html += `</table></div>`;
@@ -2651,9 +2790,10 @@ async function openAttendance(cid,ds){
     const courseRelationTag = course.isMainCourse
         ? '<span class="course-badge">Ana Kurs</span>'
         : '<span class="course-badge session">Oturum</span>';
+    const warningText = getAbsenceWarningText();
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)} ${courseRelationTag}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
-    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`).join('<br><br>')}</div>` : ''}
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)} Kurstan çıkarılması için admin onayı gereklidir. <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
     ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
         <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
         <button class="btn btn-info btn-sm" onclick="openAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">➕ Kayıtlı Öğrenci</button>
@@ -2664,10 +2804,10 @@ async function openAttendance(cid,ds){
         const present=att.find(a=>a.studentId===s.id);
         const counts = countsMap.get(`${mainCourseId}-${s.id}`) || {absent: 0, excused: 0};
         // Devamsızlık eşiği geçildiyse satır bazlı uyarıyı tetikliyoruz.
-        const hasAbsenceWarning = counts.absent >= absenceThreshold;
+        const hasAbsenceWarning = counts.absent >= absenceThreshold && !isAbsenceWarningDismissed(mainCourseId, s.id);
         const warningTag = hasAbsenceWarning
-            ? `<div class="absence-warning" role="alert">
-                <span>WARNING: This student has reached the 3-day absenteeism limit.</span>
+            ? `<div class="absence-warning" role="alert" data-course-id="${escapeAttr(mainCourseId)}" data-student-id="${escapeAttr(s.id)}">
+                <span>${escapeHtml(warningText)}</span>
                 <button type="button" aria-label="Uyarıyı kapat" onclick="dismissAbsenceWarning(this)">×</button>
             </div>`
             : '';
@@ -2686,7 +2826,11 @@ async function openAttendance(cid,ds){
 
 function dismissAbsenceWarning(button){
     const warning = button?.closest('.absence-warning');
-    if(warning) warning.remove();
+    if(!warning) return;
+    const courseId = Number(warning.dataset.courseId);
+    const studentId = Number(warning.dataset.studentId);
+    setAbsenceWarningDismissed(courseId, studentId);
+    warning.remove();
 }
 
 function openAttendanceNewStudent(cid,ds){
@@ -3444,6 +3588,7 @@ function generateReport(){
     const absenceTotals = getCourseAbsenceTotals(source, {courseId: cid, studentId: sid, teacherId: tid});
     const absenceWarnings = getAbsenceWarnings(source, {courseId: cid, studentId: sid, teacherId: tid});
     const absenceDaysThreshold = getAbsenceDaysThreshold();
+    const warningText = getAbsenceWarningText();
     let html=`<h3 style="margin:20px 0">Rapor Sonuçları</h3>
     <p>Toplam Kayıt: ${filtered.length} | Devamsızlık: ${absent.length} | Mazeretli: ${excused.length}</p>
     ${absenceTotals.length ? `<div class="table-responsive" style="margin:10px 0;">
@@ -3452,7 +3597,7 @@ function generateReport(){
         ${absenceTotals.map(item => `<tr><td>${escapeHtml(item.course.name)}</td><td>${item.absent}</td><td>${item.excused}</td></tr>`).join('')}
         </table>
     </div>` : ''}
-    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.${isAdmin ? `<div style="margin-top:6px;"><button class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.course.id},${item.student.id})">Onayla ve Kurstan Çıkar</button></div>` : ''}`).join('<br><br>')}</div>` : ''}
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)} Kurstan çıkarılması için admin onayı gereklidir.${isAdmin ? `<div style="margin-top:6px;"><button class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.course.id},${item.student.id})">Onayla ve Kurstan Çıkar</button></div>` : ''} <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
         const mainCourseId = courseMainMap.get(Number(a.courseId)) ?? Number(a.courseId);
