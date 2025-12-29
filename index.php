@@ -1,4 +1,10 @@
 <?php
+/**
+ * Updates (2025-XX-XX):
+ * - Enforced main_course_id grouping for course sessions and absence calculations.
+ * - Added absence counting mode toggle and fixed warning text handling.
+ * - Hardened student/course mutations with transactions and group-aware cleanup.
+ */
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 ini_set('error_log', __DIR__ . '/error.log');
@@ -56,6 +62,7 @@ function clean_password($value, $maxLength = 255) {
 const ATTENDANCE_STATUS_PRESENT = 1;
 const ATTENDANCE_STATUS_ABSENT = 2;
 const ATTENDANCE_STATUS_EXCUSED = 3;
+const ABSENCE_COUNT_MODE = 'distinct_days'; // 'distinct_days' or 'sessions'
 
 function normalize_attendance_status($value): ?int {
     if (is_int($value)) {
@@ -114,63 +121,21 @@ function ensure_student_course_status_columns(PDO $pdo, string $dbName): void {
     $pdo->exec("UPDATE student_courses SET status = 1 WHERE status IS NULL");
 }
 
-function get_course_identity_context(PDO $pdo, int $courseId, int $periodId): ?array {
-    $stmt = $pdo->prepare("SELECT id, name, COALESCE(main_course_id, id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
-    $stmt->execute([$courseId, $periodId]);
-    $course = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$course) {
-        return null;
-    }
-    $mainCourseId = (int)$course['main_course_id'];
-    $name = (string)$course['name'];
-    $mainCountStmt = $pdo->prepare("SELECT COUNT(*) FROM courses WHERE period_id=? AND COALESCE(main_course_id, id)=?");
-    $mainCountStmt->execute([$periodId, $mainCourseId]);
-    $mainCount = (int)$mainCountStmt->fetchColumn();
-    $nameStatsStmt = $pdo->prepare("SELECT COUNT(*) AS cnt, MIN(id) AS min_id FROM courses WHERE period_id=? AND name=?");
-    $nameStatsStmt->execute([$periodId, $name]);
-    $nameStats = $nameStatsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
-    $nameCount = (int)($nameStats['cnt'] ?? 0);
-    $nameMinId = (int)($nameStats['min_id'] ?? $courseId);
-    return [
-        'id' => (int)$course['id'],
-        'name' => $name,
-        'main_course_id' => $mainCourseId,
-        'main_count' => $mainCount,
-        'name_count' => $nameCount,
-        'name_min_id' => $nameMinId
-    ];
-}
-
 function get_course_main_id(PDO $pdo, int $courseId, int $periodId): ?int {
-    $context = get_course_identity_context($pdo, $courseId, $periodId);
-    if (!$context) {
-        return null;
-    }
-    if (($context['main_count'] ?? 0) > 1) {
-        return (int)$context['main_course_id'];
-    }
-    if (($context['name_count'] ?? 0) > 1) {
-        return (int)$context['name_min_id'];
-    }
-    return (int)$context['id'];
+    $stmt = $pdo->prepare("SELECT COALESCE(NULLIF(main_course_id, 0), id) AS main_course_id FROM courses WHERE id=? AND period_id=?");
+    $stmt->execute([$courseId, $periodId]);
+    $mainCourseId = $stmt->fetchColumn();
+    return $mainCourseId ? (int)$mainCourseId : null;
 }
 
 function get_course_group_ids(PDO $pdo, int $courseId, int $periodId): array {
-    $context = get_course_identity_context($pdo, $courseId, $periodId);
-    if (!$context) {
+    $mainCourseId = get_course_main_id($pdo, $courseId, $periodId);
+    if (!$mainCourseId) {
         return [];
     }
-    if (($context['main_count'] ?? 0) > 1) {
-        $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND COALESCE(main_course_id, id)=?");
-        $stmt->execute([$periodId, $context['main_course_id']]);
-        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
-    }
-    if (($context['name_count'] ?? 0) > 1) {
-        $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND name=?");
-        $stmt->execute([$periodId, $context['name']]);
-        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
-    }
-    return [(int)$context['id']];
+    $stmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND COALESCE(NULLIF(main_course_id, 0), id)=?");
+    $stmt->execute([$periodId, $mainCourseId]);
+    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
 }
 
 function get_main_course_row(PDO $pdo, int $mainCourseId, int $periodId): ?array {
@@ -181,63 +146,33 @@ function get_main_course_row(PDO $pdo, int $mainCourseId, int $periodId): ?array
 }
 
 function get_absence_counts(PDO $pdo, int $periodId): array {
-    // Devamsızlık günlerini kurs kimliğine göre benzersiz tarihlerle hesaplıyoruz.
+    if (ABSENCE_COUNT_MODE === 'sessions') {
+        $absentExpression = "SUM(CASE WHEN a.status=? THEN 1 ELSE 0 END)";
+        $excusedExpression = "SUM(CASE WHEN a.status=? THEN 1 ELSE 0 END)";
+    } else {
+        $absentExpression = "COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END)";
+        $excusedExpression = "COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END)";
+    }
     $sql = "SELECT
-        CASE
-            WHEN main_group.cnt > 1 THEN main_group.main_course_id
-            WHEN name_group.cnt > 1 THEN name_group.min_id
-            ELSE c.id
-        END AS course_id,
+        COALESCE(NULLIF(c.main_course_id, 0), c.id) AS course_id,
         a.student_id,
-        COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END) AS absent_count,
-        COUNT(DISTINCT CASE WHEN a.status=? THEN a.date END) AS excused_count
+        {$absentExpression} AS absent_count,
+        {$excusedExpression} AS excused_count
         FROM attendance a
         INNER JOIN courses c ON c.id=a.course_id AND c.period_id=a.period_id
-        LEFT JOIN (
-            SELECT COALESCE(main_course_id, id) AS main_course_id, COUNT(*) AS cnt
-            FROM courses
-            WHERE period_id=?
-            GROUP BY main_course_id
-        ) AS main_group ON main_group.main_course_id = COALESCE(c.main_course_id, c.id)
-        LEFT JOIN (
-            SELECT name, MIN(id) AS min_id, COUNT(*) AS cnt
-            FROM courses
-            WHERE period_id=?
-            GROUP BY name
-        ) AS name_group ON name_group.name = c.name
         WHERE a.period_id=?
         GROUP BY course_id, a.student_id";
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId, $periodId, $periodId]);
+    $stmt->execute([ATTENDANCE_STATUS_ABSENT, ATTENDANCE_STATUS_EXCUSED, $periodId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
 function build_course_logical_map(array $courses): array {
-    $mainCounts = [];
-    $nameCounts = [];
-    $nameMinIds = [];
-    foreach ($courses as $course) {
-        $courseId = (int)($course['id'] ?? 0);
-        $mainCourseId = (int)($course['main_course_id'] ?? $courseId);
-        $name = (string)($course['name'] ?? '');
-        $mainCounts[$mainCourseId] = ($mainCounts[$mainCourseId] ?? 0) + 1;
-        $nameCounts[$name] = ($nameCounts[$name] ?? 0) + 1;
-        if (!isset($nameMinIds[$name]) || $courseId < $nameMinIds[$name]) {
-            $nameMinIds[$name] = $courseId;
-        }
-    }
     $map = [];
     foreach ($courses as $course) {
         $courseId = (int)($course['id'] ?? 0);
-        $mainCourseId = (int)($course['main_course_id'] ?? $courseId);
-        $name = (string)($course['name'] ?? '');
-        if (($mainCounts[$mainCourseId] ?? 0) > 1) {
-            $logicalId = $mainCourseId;
-        } elseif (($nameCounts[$name] ?? 0) > 1) {
-            $logicalId = $nameMinIds[$name] ?? $courseId;
-        } else {
-            $logicalId = $courseId;
-        }
+        $mainCourseId = (int)($course['main_course_id'] ?? 0);
+        $logicalId = $mainCourseId > 0 ? $mainCourseId : $courseId;
         $map[$courseId] = $logicalId;
     }
     return $map;
@@ -891,9 +826,33 @@ if (isset($_GET['action'])) {
         if (!$id) {
             json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
         }
-        $pdo->prepare("DELETE FROM courses WHERE id=? AND period_id=?")->execute([$id, $activePeriodId]);
-        $pdo->prepare("DELETE FROM student_courses WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
-        $pdo->prepare("DELETE FROM attendance WHERE course_id=? AND period_id=?")->execute([$id, $activePeriodId]);
+        try {
+            $pdo->beginTransaction();
+            $groupStmt = $pdo->prepare("SELECT COALESCE(NULLIF(main_course_id, 0), id) AS group_id FROM courses WHERE id=? AND period_id=?");
+            $groupStmt->execute([$id, $activePeriodId]);
+            $groupId = $groupStmt->fetchColumn();
+            if (!$groupId) {
+                $pdo->rollBack();
+                json_response(['status' => 'error', 'message' => 'Kurs bulunamadı'], 404);
+            }
+            $groupId = (int)$groupId;
+            $groupCoursesStmt = $pdo->prepare("SELECT id FROM courses WHERE period_id=? AND COALESCE(NULLIF(main_course_id, 0), id)=?");
+            $groupCoursesStmt->execute([$activePeriodId, $groupId]);
+            $courseIds = array_map('intval', $groupCoursesStmt->fetchAll(PDO::FETCH_COLUMN));
+            if ($courseIds) {
+                $placeholders = implode(',', array_fill(0, count($courseIds), '?'));
+                $params = array_merge([$activePeriodId], $courseIds);
+                $pdo->prepare("DELETE FROM student_courses WHERE period_id=? AND course_id IN ($placeholders)")->execute($params);
+                $pdo->prepare("DELETE FROM attendance WHERE period_id=? AND course_id IN ($placeholders)")->execute($params);
+                $pdo->prepare("DELETE FROM courses WHERE period_id=? AND id IN ($placeholders)")->execute($params);
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -905,65 +864,108 @@ if (isset($_GET['action'])) {
         $sid = $s['id'] ?? null;
         $sidStr = is_string($sid) ? $sid : '';
         $sidInt = clean_int($sid);
-        if ($sidInt && $sidInt > 0 && !str_starts_with($sidStr, 'new')) {
-            $sql = "UPDATE students SET name=?, surname=?, phone=?, email=?, tc=?, date_of_birth=?, education=?, parent_name=?, parent_phone=? WHERE id=?";
-            $pdo->prepare($sql)->execute([
-                clean_string($s['name'] ?? '', 100),
-                clean_string($s['surname'] ?? '', 100),
-                clean_string($s['phone'] ?? '', 30),
-                clean_email($s['email'] ?? ''),
-                clean_string($s['tc'] ?? '', 20),
-                clean_date($s['date_of_birth'] ?? null),
-                clean_string($s['education'] ?? '', 150),
-                clean_string($s['parent_name'] ?? '', 150),
-                clean_string($s['parent_phone'] ?? '', 30),
-                $sidInt
-            ]);
-        } else {
-            $sql = "INSERT INTO students (name, surname, phone, email, tc, date_of_birth, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([
-                clean_string($s['name'] ?? '', 100),
-                clean_string($s['surname'] ?? '', 100),
-                clean_string($s['phone'] ?? '', 30),
-                clean_email($s['email'] ?? ''),
-                clean_string($s['tc'] ?? '', 20),
-                clean_date($s['date_of_birth'] ?? null),
-                clean_string($s['education'] ?? '', 150),
-                clean_string($s['parent_name'] ?? '', 150),
-                clean_string($s['parent_phone'] ?? '', 30)
-            ]);
-            $sid = $pdo->lastInsertId();
-        }
+        try {
+            $pdo->beginTransaction();
+            $oldCourseIds = [];
+            if ($sidInt && $sidInt > 0 && !str_starts_with($sidStr, 'new')) {
+                $sql = "UPDATE students SET name=?, surname=?, phone=?, email=?, tc=?, date_of_birth=?, education=?, parent_name=?, parent_phone=? WHERE id=?";
+                $pdo->prepare($sql)->execute([
+                    clean_string($s['name'] ?? '', 100),
+                    clean_string($s['surname'] ?? '', 100),
+                    clean_string($s['phone'] ?? '', 30),
+                    clean_email($s['email'] ?? ''),
+                    clean_string($s['tc'] ?? '', 20),
+                    clean_date($s['date_of_birth'] ?? null),
+                    clean_string($s['education'] ?? '', 150),
+                    clean_string($s['parent_name'] ?? '', 150),
+                    clean_string($s['parent_phone'] ?? '', 30),
+                    $sidInt
+                ]);
+                $oldStmt = $pdo->prepare("SELECT course_id FROM student_courses WHERE student_id=? AND period_id=? AND status=1");
+                $oldStmt->execute([$sidInt, $activePeriodId]);
+                $oldCourseIds = array_map('intval', $oldStmt->fetchAll(PDO::FETCH_COLUMN));
+            } else {
+                $sql = "INSERT INTO students (name, surname, phone, email, tc, date_of_birth, education, parent_name, parent_phone, reg_date) VALUES (?,?,?,?,?,?,?,?,?, NOW())";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    clean_string($s['name'] ?? '', 100),
+                    clean_string($s['surname'] ?? '', 100),
+                    clean_string($s['phone'] ?? '', 30),
+                    clean_email($s['email'] ?? ''),
+                    clean_string($s['tc'] ?? '', 20),
+                    clean_date($s['date_of_birth'] ?? null),
+                    clean_string($s['education'] ?? '', 150),
+                    clean_string($s['parent_name'] ?? '', 150),
+                    clean_string($s['parent_phone'] ?? '', 30)
+                ]);
+                $sid = $pdo->lastInsertId();
+            }
 
-        $sidInt = clean_int($sid);
-        if (!$sidInt) {
-            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
-        }
-        $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=?")->execute([$sidInt, $activePeriodId]);
-        if (!empty($s['courses']) && is_array($s['courses'])) {
+            $sidInt = clean_int($sid);
+            if (!$sidInt) {
+                $pdo->rollBack();
+                json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 400);
+            }
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=?")->execute([$sidInt, $activePeriodId]);
             $expandedCourseIds = [];
-            foreach ($s['courses'] as $cid) {
-                $cidInt = clean_int($cid);
-                if (!$cidInt) {
-                    continue;
-                }
-                $mainCourseId = get_course_main_id($pdo, $cidInt, $activePeriodId);
-                if ($mainCourseId) {
-                    $expandedCourseIds = array_merge($expandedCourseIds, get_course_group_ids($pdo, $mainCourseId, $activePeriodId));
-                } else {
-                    $expandedCourseIds[] = $cidInt;
+            if (!empty($s['courses']) && is_array($s['courses'])) {
+                foreach ($s['courses'] as $cid) {
+                    $cidInt = clean_int($cid);
+                    if (!$cidInt) {
+                        continue;
+                    }
+                    $mainCourseId = get_course_main_id($pdo, $cidInt, $activePeriodId);
+                    if ($mainCourseId) {
+                        $expandedCourseIds = array_merge($expandedCourseIds, get_course_group_ids($pdo, $mainCourseId, $activePeriodId));
+                    } else {
+                        $expandedCourseIds[] = $cidInt;
+                    }
                 }
             }
             $expandedCourseIds = array_values(array_unique(array_filter($expandedCourseIds)));
             if ($expandedCourseIds) {
                 $insert = $pdo->prepare("INSERT INTO student_courses (student_id, course_id, period_id) VALUES (?, ?, ?)");
-                foreach($expandedCourseIds as $cidInt) {
+                foreach ($expandedCourseIds as $cidInt) {
                     $insert->execute([$sidInt, $cidInt, $activePeriodId]);
                 }
             }
+
+            $oldGroupIds = [];
+            foreach ($oldCourseIds as $oldCourseId) {
+                $mainCourseId = get_course_main_id($pdo, $oldCourseId, $activePeriodId);
+                if ($mainCourseId) {
+                    $oldGroupIds[$mainCourseId] = true;
+                }
+            }
+            $newGroupIds = [];
+            foreach ($expandedCourseIds as $newCourseId) {
+                $mainCourseId = get_course_main_id($pdo, $newCourseId, $activePeriodId);
+                if ($mainCourseId) {
+                    $newGroupIds[$mainCourseId] = true;
+                }
+            }
+            $removedGroupIds = array_diff(array_keys($oldGroupIds), array_keys($newGroupIds));
+            if ($removedGroupIds) {
+                $removedCourseIds = [];
+                foreach ($removedGroupIds as $removedGroupId) {
+                    $removedCourseIds = array_merge($removedCourseIds, get_course_group_ids($pdo, (int)$removedGroupId, $activePeriodId));
+                }
+                $removedCourseIds = array_values(array_unique(array_filter($removedCourseIds)));
+                if ($removedCourseIds) {
+                    $placeholders = implode(',', array_fill(0, count($removedCourseIds), '?'));
+                    $params = array_merge([$sidInt, $activePeriodId], $removedCourseIds);
+                    $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)")->execute($params);
+                }
+            }
+
+            $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $sidInt]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
         }
-        $pdo->prepare("INSERT IGNORE INTO student_periods (student_id, period_id, reg_date) SELECT id, ?, COALESCE(reg_date, CURDATE()) FROM students WHERE id=?")->execute([$activePeriodId, $sidInt]);
         echo json_encode(['status'=>'success']); exit;
     }
 
@@ -1473,9 +1475,12 @@ if (isset($_GET['action'])) {
         if ($threshold <= 0) {
             $threshold = 3;
         }
-        // Devamsızlık günlerini kurs bazında benzersiz tarihlerle sayıyoruz.
+        if (ABSENCE_COUNT_MODE === 'sessions') {
+            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM attendance WHERE period_id=? AND student_id=? AND status=? AND course_id IN ($placeholders)");
+        } else {
+            $countStmt = $pdo->prepare("SELECT COUNT(DISTINCT date) FROM attendance WHERE period_id=? AND student_id=? AND status=? AND course_id IN ($placeholders)");
+        }
         $countParams = array_merge([$periodId, $studentId, ATTENDANCE_STATUS_ABSENT], $courseGroupIds);
-        $countStmt = $pdo->prepare("SELECT COUNT(DISTINCT date) FROM attendance WHERE period_id=? AND student_id=? AND status=? AND course_id IN ($placeholders)");
         $countStmt->execute($countParams);
         $absenceCount = (int)$countStmt->fetchColumn();
         if ($absenceCount < $threshold) {
@@ -1483,9 +1488,9 @@ if (isset($_GET['action'])) {
         }
         try {
             $pdo->beginTransaction();
-            // Kurstan çıkarma işlemi: kaydı pasif hale getirip gelecek yoklamaları temizliyoruz.
+            // Kurstan çıkarma işlemi: tüm oturumlarda kaydı kaldırıp gelecek yoklamaları temizliyoruz.
             $deleteParams = array_merge([$studentId, $periodId], $courseGroupIds);
-            $pdo->prepare("UPDATE student_courses SET status=0, removed_at=NOW() WHERE student_id=? AND period_id=? AND course_id IN ($placeholders) AND status=1")->execute($deleteParams);
+            $pdo->prepare("DELETE FROM student_courses WHERE student_id=? AND period_id=? AND course_id IN ($placeholders)")->execute($deleteParams);
             $attendanceParams = array_merge([$studentId, $periodId, $removalDate], $courseGroupIds);
             $pdo->prepare("DELETE FROM attendance WHERE student_id=? AND period_id=? AND date>=? AND course_id IN ($placeholders)")->execute($attendanceParams);
             $pdo->commit();
@@ -2158,7 +2163,7 @@ function dismissAbsenceWarningByIds(courseId, studentId, button){
 }
 
 function getAbsenceWarningText(){
-    return 'Uyarı: Bu öğrenci bu kurs için 3 gün devamsızlık sınırını aşmıştır.';
+    return 'This student has exceeded the absenteeism limit (3 days) for this course.';
 }
 
 function getAbsenceCountsMap(source){
