@@ -2158,8 +2158,7 @@ function dismissAbsenceWarningByIds(courseId, studentId, button){
 }
 
 function getAbsenceWarningText(){
-    const days = getAbsenceDaysThreshold();
-    return `This student has exceeded the absenteeism limit (${days} days) for this course.`;
+    return 'Uyarı: Bu öğrenci bu kurs için 3 gün devamsızlık sınırını aşmıştır.';
 }
 
 function getAbsenceCountsMap(source){
@@ -2422,7 +2421,7 @@ function showDashboard(){
                 <td>${escapeHtml(studentName)}</td>
                 <td>${escapeHtml(item.course.name)}</td>
                 <td>${item.absent}</td>
-                <td>${escapeHtml(warningText)} Kurstan çıkarılması için admin onayı gereklidir.
+                <td>${escapeHtml(warningText)}
                     <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>
                 </td>
             </tr>`;
@@ -2793,7 +2792,7 @@ async function openAttendance(cid,ds){
     const warningText = getAbsenceWarningText();
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)} ${courseRelationTag}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
-    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)} Kurstan çıkarılması için admin onayı gereklidir. <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı:</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)} <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
     ${canManage ? `<div class="attendance-actions" style="margin-bottom:10px">
         <button class="btn btn-primary btn-sm" onclick="openAttendanceNewStudent(${cid},'${escapeAttr(ds)}')">➕ Yeni Öğrenci</button>
         <button class="btn btn-info btn-sm" onclick="openAttendanceExistingStudent(${cid},'${escapeAttr(ds)}')">➕ Kayıtlı Öğrenci</button>
@@ -2984,7 +2983,7 @@ function openStudentInfo(sid){
         if(!c) return '';
         const counts = countsMap.get(`${mainCourseId}-${s.id}`) || {absent: 0, excused: 0};
         const warning = counts.absent >= absenceThreshold
-            ? ` - ${escapeHtml(s.name)} ${escapeHtml(s.surname)} (${escapeHtml(c.name)}) devamsızlık sayısı: ${counts.absent}. Bu öğrenci devamsızlık sınırına ulaşmıştır. Kurstan çıkarılması için admin onayı gereklidir.`
+            ? ` - ${escapeHtml(s.name)} ${escapeHtml(s.surname)} (${escapeHtml(c.name)}) devamsızlık sayısı: ${counts.absent}. ${escapeHtml(getAbsenceWarningText())}`
             : '';
         return `${escapeHtml(c.name)}: ${counts.absent} Devamsızlık / ${counts.excused} Mazeretli${warning}`;
     }).filter(Boolean).join('<br>') : '';
@@ -3597,7 +3596,7 @@ function generateReport(){
         ${absenceTotals.map(item => `<tr><td>${escapeHtml(item.course.name)}</td><td>${item.absent}</td><td>${item.excused}</td></tr>`).join('')}
         </table>
     </div>` : ''}
-    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)} Kurstan çıkarılması için admin onayı gereklidir.${isAdmin ? `<div style="margin-top:6px;"><button class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.course.id},${item.student.id})">Onayla ve Kurstan Çıkar</button></div>` : ''} <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
+    ${absenceWarnings.length ? `<div class="conflict"><strong>Devamsızlık Uyarısı (Sınır: ${absenceDaysThreshold} Gün)</strong><br>${absenceWarnings.map(item => `${escapeHtml(item.student.name)} ${escapeHtml(item.student.surname)} - ${escapeHtml(item.course.name)} (Devamsızlık: ${item.absent})<br>${escapeHtml(warningText)}${isAdmin ? `<div style="margin-top:6px;"><button class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.course.id},${item.student.id})">Onayla ve Kurstan Çıkar</button></div>` : ''} <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>`).join('<br><br>')}</div>` : ''}
     <div class="table-responsive"><table id="reportTable"><tr><th>Öğrenci</th><th>Kurs</th><th>Öğretmen</th><th>Tarih</th><th>Durum</th></tr>`;
     filtered.forEach(a=>{
         const mainCourseId = courseMainMap.get(Number(a.courseId)) ?? Number(a.courseId);
