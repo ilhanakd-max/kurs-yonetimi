@@ -1,11 +1,5 @@
 <?php
-/**
- * Updates (2025-XX-XX):
- * - Enforced main_course_id grouping for course sessions and absence calculations.
- * - Added absence counting mode toggle and fixed warning text handling.
- * - Hardened student/course mutations with transactions and group-aware cleanup.
- * - Added role-based absence limit banners with grouped items and server-side exceeded queries.
- */
+
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 ini_set('error_log', __DIR__ . '/error.log');
