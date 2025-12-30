@@ -64,6 +64,7 @@ const ATTENDANCE_STATUS_PRESENT = 1;
 const ATTENDANCE_STATUS_ABSENT = 2;
 const ATTENDANCE_STATUS_EXCUSED = 3;
 const ABSENCE_COUNT_MODE = 'distinct_days'; // 'distinct_days' or 'sessions'
+define('ABSENCE_LIMIT_WARNING_TR', 'Bu öğrenci bu kurs için devamsızlık sınırını (3 gün) aştı.');
 
 function normalize_attendance_status($value): ?int {
     if (is_int($value)) {
@@ -1815,6 +1816,9 @@ footer {position: absolute; bottom: 5px; width: 100%; text-align: center; font-s
 const CSRF_TOKEN = <?php echo json_encode($_SESSION['csrf_token']); ?>;
 const SERVER_NOW = <?php echo json_encode(date('c')); ?>;
 const SERVER_TIME_OFFSET = new Date(SERVER_NOW).getTime() - Date.now();
+window.APP_I18N = {
+    absenceLimitWarning: <?php echo json_encode(ABSENCE_LIMIT_WARNING_TR, JSON_UNESCAPED_UNICODE); ?>
+};
 const DAYS=['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Pazar'];
 const ATT_STATUS_PRESENT = 1;
 const ATT_STATUS_ABSENT = 2;
@@ -2253,7 +2257,7 @@ function dismissAbsenceWarningByIds(courseId, studentId, button){
 }
 
 function getAbsenceWarningText(){
-    return 'This student has exceeded the absenteeism limit (3 days) for this course.';
+    return window.APP_I18N?.absenceLimitWarning || '';
 }
 
 const ABSENCE_LIMIT_BANNER_STORAGE_KEY = 'absence_limit_banner_dismissed';
@@ -2274,7 +2278,7 @@ function dismissAbsenceLimitBanner(button){
 }
 
 function getAbsenceLimitWarningText(){
-    return 'This student has exceeded the absenteeism limit (3 days) for this course.';
+    return window.APP_I18N?.absenceLimitWarning || '';
 }
 
 function openAbsenceLimitReport(groupId){
