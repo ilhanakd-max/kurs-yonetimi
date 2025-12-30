@@ -163,7 +163,7 @@ function get_absence_counts(PDO $pdo, int $periodId): array {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function get_exceeded_absence_items(PDO $pdo, string $viewerRole, ?int $viewerTeacherId): array {
+function get_exceeded_absence_items(PDO $pdo, string $viewerRole, ?int $viewerTeacherId, ?int $filterGroupId = null): array {
     global $activePeriodId;
     if (!$activePeriodId) {
         return [];
@@ -217,6 +217,10 @@ function get_exceeded_absence_items(PDO $pdo, string $viewerRole, ?int $viewerTe
         LEFT JOIN teachers t ON t.id=mc.teacher_id
         WHERE agg.absent_count >= ?";
     $params = [ATTENDANCE_STATUS_ABSENT, $activePeriodId, $activePeriodId, $activePeriodId, $threshold];
+    if ($filterGroupId) {
+        $sql .= " AND agg.group_id=?";
+        $params[] = $filterGroupId;
+    }
     if ($viewerRole === 'teacher') {
         $sql .= " AND mc.teacher_id=?";
         $params[] = $viewerTeacherId;
@@ -703,6 +707,21 @@ if (isset($_GET['action'])) {
         }
 
         echo json_encode($response);
+        exit;
+    }
+
+    if ($action === 'get_absence_exceeded_items') {
+        if ($method !== 'GET') {
+            json_response(['status' => 'error', 'message' => 'Geçersiz istek'], 405);
+        }
+        $groupId = clean_int($_GET['group_id'] ?? null);
+        $items = get_exceeded_absence_items(
+            $pdo,
+            $user['role'] ?? '',
+            ($user['role'] ?? '') === 'teacher' ? (int)($user['id'] ?? 0) : null,
+            $groupId
+        );
+        echo json_encode(['status' => 'success', 'items' => $items]);
         exit;
     }
 
@@ -1956,14 +1975,7 @@ async function refreshData(options = {}) {
         }
         data.attendanceRange = res.attendanceRange || range;
         data.absenceCounts = res.absenceCounts || [];
-        data.absenceExceededItems = (res.absenceExceededItems || []).map(item => ({
-            ...item,
-            group_id: Number(item.group_id),
-            main_course_id: Number(item.main_course_id),
-            teacher_id: item.teacher_id !== null ? Number(item.teacher_id) : null,
-            student_id: Number(item.student_id),
-            absence_count: Number(item.absence_count)
-        }));
+        data.absenceExceededItems = normalizeAbsenceLimitItems(res.absenceExceededItems || []);
         reportData = null;
         reportPeriodId = data.activePeriod ? data.activePeriod.id : null;
         if(!data.holidays || data.holidays.length === 0) data.holidays = [...INITIAL_MOVABLE_HOLIDAYS];
@@ -2287,6 +2299,25 @@ function openAbsenceLimitReport(groupId){
 
 function getAbsenceLimitItems(source){
     return Array.isArray(source?.absenceExceededItems) ? source.absenceExceededItems : [];
+}
+
+function normalizeAbsenceLimitItems(items){
+    return (items || []).map(item => ({
+        ...item,
+        group_id: Number(item.group_id),
+        main_course_id: Number(item.main_course_id),
+        teacher_id: item.teacher_id !== null ? Number(item.teacher_id) : null,
+        student_id: Number(item.student_id),
+        absence_count: Number(item.absence_count)
+    }));
+}
+
+async function fetchAbsenceLimitItemsForGroup(groupId){
+    if(!(currentUser?.role === 'admin' || currentUser?.role === 'teacher')) return [];
+    if(!groupId) return [];
+    const res = await apiCall('get_absence_exceeded_items', null, {group_id: groupId});
+    if(res?.status !== 'success') return [];
+    return normalizeAbsenceLimitItems(res.items || []);
 }
 
 function buildAbsenceLimitBannerHtml(items){
@@ -2956,9 +2987,7 @@ async function openAttendance(cid,ds){
         ? '<span class="course-badge">Ana Kurs</span>'
         : '<span class="course-badge session">Oturum</span>';
     const warningText = getAbsenceWarningText();
-    const absenceLimitItems = (currentUser.role === 'admin' || currentUser.role === 'teacher')
-        ? getAbsenceLimitItems(data)
-        : [];
+    const absenceLimitItems = await fetchAbsenceLimitItemsForGroup(mainCourseId);
     const absenceLimitBanner = buildAbsenceLimitBannerHtml(absenceLimitItems);
     let html=`<div class="modal-header"><h2>📋 Yoklama: ${escapeHtml(course.name)} ${courseRelationTag}</h2><span class="modal-close" onclick="closeModal()">×</span></div>
     <p><strong>Tarih:</strong> ${escapeHtml(formatDisplayDate(ds))}</p>
