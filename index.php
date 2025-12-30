@@ -2546,15 +2546,13 @@ function showDashboard(){
     const today = formatDate(getServerNow());
     const todayCourses = getDashboardCoursesForDate(today);
     const absenceSummary = getAbsenceSummary();
-    const absenceWarnings = getAbsenceWarnings(data, {teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
-    const warningText = getAbsenceWarningText();
     const announcements = getVisibleAnnouncements();
     const thresholds = getAbsenceThresholds();
     const absenceDaysThreshold = getAbsenceDaysThreshold();
-    const absenceLimitItems = (currentUser.role === 'admin' || currentUser.role === 'teacher')
+    const exceededAbsenceItems = (currentUser.role === 'admin' || currentUser.role === 'teacher')
         ? getAbsenceLimitItems(data)
         : [];
-    const absenceLimitBanner = buildAbsenceLimitBannerHtml(absenceLimitItems);
+    const absenceLimitBanner = buildAbsenceLimitBannerHtml(exceededAbsenceItems);
     let html = `<div class="dashboard">${absenceLimitBanner}<div class="dashboard-grid">`;
     html += `<div class="card dashboard-card">
         <h2>📌 Bugünkü Dersler</h2>`;
@@ -2606,22 +2604,27 @@ function showDashboard(){
         html += `</table></div>`;
     }
     html += `<h3 style="margin-top:15px;">Devamsızlık Sınırını Aştı (Sınır: ${absenceDaysThreshold} Gün)</h3>`;
-    if(absenceWarnings.length === 0){
+    if(exceededAbsenceItems.length === 0){
         html += `<p class="dashboard-empty">Devamsızlık sınırını aşan öğrenci bulunamadı.</p>`;
     } else {
         html += `<div class="table-responsive">
             <table class="dashboard-table">
-            <tr><th>Öğrenci</th><th>Kurs</th><th>Devamsızlık</th><th>Uyarı</th></tr>`;
-        absenceWarnings.forEach(item => {
-            const studentName = `${item.student.name} ${item.student.surname}`;
+            <tr><th>Öğrenci</th><th>Kurs</th><th>Devamsızlık</th>`;
+        if (currentUser.role === 'admin') {
+            html += `<th>İşlem</th>`;
+        }
+        html += `</tr>`;
+        exceededAbsenceItems.forEach(item => {
             html += `<tr>
-                <td>${escapeHtml(studentName)}</td>
-                <td>${escapeHtml(item.course.name)}</td>
-                <td>${item.absent}</td>
-                <td>${escapeHtml(warningText)}
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="dismissAbsenceWarningByIds(${item.course.id},${item.student.id}, this)">Kapat</button>
-                </td>
-            </tr>`;
+                <td>${escapeHtml(item.student_name)}</td>
+                <td>${escapeHtml(item.course_name)}</td>
+                <td>${item.absence_count}</td>`;
+            if (currentUser.role === 'admin') {
+                html += `<td>
+                    <button type="button" class="btn btn-warning btn-sm" onclick="approveAbsenceRemovalFromReport(${item.group_id}, ${item.student_id})">Kurstan Çıkar</button>
+                </td>`;
+            }
+            html += `</tr>`;
         });
         html += `</table></div>`;
     }
