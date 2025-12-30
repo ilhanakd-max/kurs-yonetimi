@@ -1821,6 +1821,7 @@ footer {position: absolute; bottom: 5px; width: 100%; text-align: center; font-s
 </div>
 </div>
 <div class="nav" id="navBar"></div>
+<div id="announcementContainer" class="container"></div>
 <div class="container" id="mainContent"></div>
 </div>
 <div class="modal" id="modal"><div class="modal-content" id="modalContent"></div></div>
@@ -1896,6 +1897,33 @@ function hideAnnouncement(id) {
 
 function getVisibleAnnouncements() {
     return (data.announcements || []).filter(a => !isAnnouncementHidden(a.id));
+}
+
+function renderAnnouncements() {
+    const container = document.getElementById('announcementContainer');
+    if (!container) return;
+
+    const visibleAnnouncements = getVisibleAnnouncements();
+    if (visibleAnnouncements.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const announcementsHtml = `<div class="card" style="margin-bottom: 15px; background-color: #e3f2fd;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <h2 style="margin:0; border:none;">📣 Duyurular</h2>
+        </div>
+        ${visibleAnnouncements.map(a => `
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid rgba(0,0,0,0.1);">
+                <div>
+                    <strong style="font-size: 1.05em;">${escapeHtml(a.title)}</strong>
+                    <div style="margin-top: 4px;">${formatAnnouncementMessage(a.message)}</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:0.75em" onclick="hideAnnouncement(${a.id})">Kapat</button>
+            </div>
+        `).join('')}
+    </div>`;
+    container.innerHTML = announcementsHtml;
 }
 
 function formatAnnouncementMessage(message) {
@@ -2031,6 +2059,7 @@ function showApp(firstTime){
     document.getElementById('mainApp').classList.remove('hidden');
     document.getElementById('currentUser').textContent=String(currentUser.name)+' ('+String(currentUser.role)+')';
     renderNav();
+    renderAnnouncements();
     if(firstTime) {
         if(isDashboardEnabled()) {
             showDashboard();
@@ -2548,7 +2577,6 @@ function showDashboard(){
     const absenceSummary = getAbsenceSummary();
     const absenceWarnings = getAbsenceWarnings(data, {teacherId: currentUser.role === 'teacher' ? currentUser.id : null});
     const warningText = getAbsenceWarningText();
-    const announcements = getVisibleAnnouncements();
     const thresholds = getAbsenceThresholds();
     const absenceDaysThreshold = getAbsenceDaysThreshold();
     const absenceLimitItems = (currentUser.role === 'admin' || currentUser.role === 'teacher')
@@ -2646,18 +2674,6 @@ function showDashboard(){
             </div>
         </div>
     </div>`;
-    if(announcements.length > 0){
-        html += `<div class="card dashboard-card">
-            <h2>📢 Aktif Duyurular</h2>
-            <div class="dashboard-list">`;
-        announcements.forEach(a => {
-            html += `<div class="dashboard-item">
-                <h4>${escapeHtml(a.title)}</h4>
-                <p>${escapeHtml(truncateText(a.message, 140))}</p>
-            </div>`;
-        });
-        html += `</div></div>`;
-    }
     html += `</div></div>`;
     document.getElementById('mainContent').innerHTML = html;
     requestAnimationFrame(() => {
@@ -2801,27 +2817,7 @@ function showCalendar(){
         title = `${formatDisplayDate(customStart)} - ${formatDisplayDate(customEnd)}`;
     }
 
-    const visibleAnnouncements = getVisibleAnnouncements();
-    let announcementsHtml = '';
-    if (visibleAnnouncements.length) {
-        announcementsHtml = `<div class="conflict" style="margin-bottom:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-            <strong>📣 Duyurular</strong>
-        </div>
-        ${visibleAnnouncements.map(a => `
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(0,0,0,0.08);">
-                <div>
-                    <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(a.title)}</div>
-                    <div>${formatAnnouncementMessage(a.message)}</div>
-                </div>
-                <button class="btn btn-secondary" style="padding:4px 8px;font-size:0.75em" onclick="hideAnnouncement(${a.id})">Kapat</button>
-            </div>
-        `).join('')}
-        </div>`;
-    }
-
     let html=`<div class="card">
-    ${announcementsHtml}
     <div class="filter-row" style="margin-bottom:10px; padding:10px; background:#e3f2fd; align-items:flex-end;">
         <div class="form-group" style="margin:0;">
             <label>Tesis Filtrele</label>
