@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Anamakine: sql211.infinityfree.com
--- Üretim Zamanı: 24 Ara 2025, 10:21:21
+-- Üretim Zamanı: 25 Ara 2025, 11:16:18
 -- Sunucu sürümü: 11.4.7-MariaDB
 -- PHP Sürümü: 7.2.22
 
@@ -61,7 +61,6 @@ CREATE TABLE `attendance` (
 
 CREATE TABLE `courses` (
   `id` int(11) NOT NULL,
-  `main_course_id` int(11) DEFAULT NULL,
   `name` varchar(100) NOT NULL,
   `color` varchar(20) DEFAULT '#e3f2fd',
   `day` varchar(20) NOT NULL,
@@ -80,20 +79,20 @@ CREATE TABLE `courses` (
 -- Tablo döküm verisi `courses`
 --
 
-INSERT INTO `courses` (`id`, `main_course_id`, `name`, `color`, `day`, `time`, `building`, `classroom`, `teacher_id`, `start_date`, `end_date`, `cancelled_dates`, `modifications`, `period_id`) VALUES
-(1, 1, 'Ritim Kursu (Sabah)', '#1879bf', 'Salı', '10:00-12:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 1, '2025-12-01', '2026-06-30', '[]', '[]', 1),
-(2, 2, 'Halk Dansları', '#a1ee6d', 'Salı', '18:00-20:00', 'Amfi Tiyatro', 'Amfi Tiyatro Salonu', 2, '2025-12-01', '2026-06-30', '[]', '[]', 1),
-(3, 3, 'Tiyatro Kursu', '#f0b40f', 'Pazartesi', '15:30-22:30', 'Çakabey Kültür Merkezi', 'Tiyatro Salonu', 3, '2025-12-01', '2026-06-30', '[]', '[]', 1),
-(4, 4, 'Bale Kursu', '#f312ab', 'Cumartesi', '11:00-15:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 5, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(5, 5, 'Bale Kursu', '#f312ab', 'Pazar', '11:00-15:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 5, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(6, 6, 'Ritim Kursu (Sabah)', '#1879bf', 'Salı', '12:00-14:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 1, '2025-12-01', '2026-06-30', '[]', '[]', 1),
-(7, 7, 'Piyano Kursu', '#8a4505', 'Pazartesi', '18:00-20:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(8, 8, 'Piyano Kursu', '#8a4505', 'Salı', '19:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(9, 9, 'Bağlama Kursu', '#e1f00a', 'Çarşamba', '18:00-20:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 6, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(10, 10, 'Halk Müziği Koro', '#18af31', 'Perşembe', '19:00-23:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 6, '2025-12-01', '2026-06-30', '[]', '[]', 1),
-(11, 11, 'Piyano Kursu', '#8a4505', 'Çarşamba', '18:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(12, 12, 'Piyano Kursu', '#8a4505', 'Perşembe', '18:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
-(13, 13, 'Piyano Kursu', '#8a4505', 'Cuma', '18:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1);
+INSERT INTO `courses` (`id`, `name`, `color`, `day`, `time`, `building`, `classroom`, `teacher_id`, `start_date`, `end_date`, `cancelled_dates`, `modifications`, `period_id`) VALUES
+(1, 'Ritim Kursu (Sabah)', '#1879bf', 'Salı', '10:00-12:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 1, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(2, 'Halk Dansları', '#a1ee6d', 'Salı', '18:00-20:00', 'Amfi Tiyatro', 'Amfi Tiyatro Salonu', 2, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(3, 'Tiyatro Kursu', '#f0b40f', 'Pazartesi', '15:30-22:30', 'Çakabey Kültür Merkezi', 'Tiyatro Salonu', 3, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(4, 'Bale Kursu', '#f312ab', 'Cumartesi', '11:00-15:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 5, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(5, 'Bale Kursu', '#f312ab', 'Pazar', '11:00-15:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 5, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(6, 'Ritim Kursu (Sabah)', '#1879bf', 'Salı', '12:00-14:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 1, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(7, 'Piyano Kursu', '#8a4505', 'Pazartesi', '18:00-20:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(8, 'Piyano Kursu', '#8a4505', 'Salı', '19:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(9, 'Bağlama Kursu', '#e1f00a', 'Çarşamba', '18:00-20:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 6, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(10, 'Halk Müziği Koro', '#18af31', 'Perşembe', '19:00-23:00', 'Çakabey Kültür Merkezi', 'Dans Stüdyosu', 6, '2025-12-01', '2026-06-30', '[]', '[]', 1),
+(11, 'Piyano Kursu', '#8a4505', 'Çarşamba', '18:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(12, 'Piyano Kursu', '#8a4505', 'Perşembe', '18:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1),
+(13, 'Piyano Kursu', '#8a4505', 'Cuma', '18:00-21:00', 'Çakabey Kültür Merkezi', 'Atölye 2', 4, '2025-09-01', '2026-06-30', '[]', '[]', 1);
 
 -- --------------------------------------------------------
 
@@ -273,9 +272,7 @@ INSERT INTO `students` (`id`, `name`, `surname`, `phone`, `email`, `tc`, `reg_da
 CREATE TABLE `student_courses` (
   `student_id` int(11) NOT NULL,
   `course_id` int(11) NOT NULL,
-  `period_id` int(11) NOT NULL DEFAULT 1,
-  `status` tinyint(1) NOT NULL DEFAULT 1,
-  `removed_at` datetime DEFAULT NULL
+  `period_id` int(11) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -757,18 +754,14 @@ ALTER TABLE `announcements`
 --
 ALTER TABLE `attendance`
   ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_attendance_period` (`period_id`),
-  ADD KEY `idx_attendance_student` (`student_id`),
-  ADD KEY `idx_attendance_course` (`course_id`),
-  ADD KEY `idx_attendance_date` (`date`);
+  ADD KEY `idx_attendance_period` (`period_id`);
 
 --
 -- Tablo için indeksler `courses`
 --
 ALTER TABLE `courses`
   ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_courses_period` (`period_id`),
-  ADD KEY `idx_courses_main_course` (`main_course_id`);
+  ADD KEY `idx_courses_period` (`period_id`);
 
 --
 -- Tablo için indeksler `course_periods`
@@ -799,9 +792,7 @@ ALTER TABLE `students`
 --
 ALTER TABLE `student_courses`
   ADD PRIMARY KEY (`student_id`,`course_id`,`period_id`),
-  ADD KEY `idx_student_courses_period` (`period_id`),
-  ADD KEY `idx_student_courses_student` (`student_id`),
-  ADD KEY `idx_student_courses_course` (`course_id`);
+  ADD KEY `idx_student_courses_period` (`period_id`);
 
 --
 -- Tablo için indeksler `student_periods`
