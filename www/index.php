@@ -274,31 +274,76 @@ function stream_database_backup(PDO $pdo, string $dbName) {
     exit;
 }
 // --- VERİTABANI BAĞLANTISI ---
-$db_host = 'sql211.infinityfree.com';
-$db_name = 'if0_40197167_test';
-$db_user = 'if0_40197167';
-$db_pass = 'Aeg151851'; // PANEL ŞİFRENİZ
+$db_file = __DIR__ . '/database.sqlite';
+$db_exists = file_exists($db_file);
 
 try {
-    $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
+    $pdo = new PDO("sqlite:" . $db_file);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
     die("Veritabanı hatası: " . $e->getMessage());
 }
 
+if (!$db_exists) {
+    // Veritabanı yok, db.sql'den oluştur
+    try {
+        $sql_script = file_get_contents(__DIR__ . '/db.sql');
+
+        // MySQL'e özgü komutları temizle
+        $sql_script = preg_replace('/^SET .*;/m', '', $sql_script);
+        $sql_script = preg_replace('/^START TRANSACTION;/m', '', $sql_script);
+        $sql_script = preg_replace('/^COMMIT;/m', '', $sql_script);
+        $sql_script = preg_replace('/ENGINE=InnoDB[^;]*/i', '', $sql_script);
+        $sql_script = preg_replace('/COLLATE=[^;]*/i', '', $sql_script);
+        $sql_script = preg_replace('/CHARSET=[^;]*/i', '', $sql_script);
+        $sql_script = preg_replace('/`/', '', $sql_script);
+        $sql_script = preg_replace('/unsigned /', ' ', $sql_script);
+        $sql_script = preg_replace('/AUTO_INCREMENT/', 'AUTOINCREMENT', $sql_script);
+        $sql_script = preg_replace('/int\(\d+\)/', 'INTEGER', $sql_script);
+        $sql_script = preg_replace('/tinyint\(\d+\)/', 'INTEGER', $sql_script);
+        $sql_script = preg_replace('/timestamp /', 'DATETIME ', $sql_script);
+        $sql_script = preg_replace('/current_timestamp\(\)/', 'CURRENT_TIMESTAMP', $sql_script);
+
+        $pdo->exec($sql_script);
+    } catch (Exception $e) {
+        die("Veritabanı oluşturma hatası: " . $e->getMessage());
+    }
+}
+
 // --- API İŞLEMLERİ (AJAX Requests) ---
 if (isset($_GET['action'])) {
     $action = clean_string($_GET['action'], 50);
-    if ($action === 'download_backup') {
-        $token = clean_string($_GET['token'] ?? '', 100);
-        if (!$token || !hash_equals($_SESSION['csrf_token'], $token)) {
-            http_response_code(400);
-            exit;
-        }
-        $user = require_auth();
-        require_admin($user);
-        stream_database_backup($pdo, $db_name);
+
+    if ($action === 'backup_database') {
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="database.sqlite"');
+        header('Expires: 0');
+        header('Cache-Control: must-revalidate');
+        header('Pragma: public');
+        header('Content-Length: ' . filesize($db_file));
+        readfile($db_file);
+        exit;
     }
+
+    if ($action === 'restore_database') {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['backup_file'])) {
+            if ($_FILES['backup_file']['error'] === UPLOAD_ERR_OK) {
+                move_uploaded_file($_FILES['backup_file']['tmp_name'], $db_file);
+                echo json_encode(['status' => 'success']);
+            } else {
+                echo json_encode(['status' => 'error', 'message' => 'Dosya yüklenirken bir hata oluştu.']);
+            }
+        } else {
+             echo "<form action='?action=restore_database' method='post' enctype='multipart/form-data'>
+                <h1>Veritabanı Geri Yükle</h1>
+                <p>Lütfen bir <code>.sqlite</code> yedek dosyası seçin.</p>
+                <input type='file' name='backup_file' accept='.sqlite'>
+                <button type='submit'>Geri Yükle</button>
+             </form>";
+        }
+        exit;
+    }
+
     header('Content-Type: application/json');
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $rawInput = file_get_contents('php://input');
@@ -2710,7 +2755,21 @@ async function deleteAnnouncement(id){
     }
 }
 async function saveSettings(){await apiCall('save_meta',{key:'title',value:document.getElementById('settingTitle').value});alert('Kaydedildi!');}
-function downloadDatabaseBackup(){window.location.href='?action=download_backup&token='+encodeURIComponent(CSRF_TOKEN);}
+
+function backupDatabase() {
+    window.location.href = '?action=backup_database';
+}
+
+function restoreDatabase() {
+    const restoreWindow = window.open('?action=restore_database', 'restoreWindow', 'width=400,height=300');
+    const timer = setInterval(() => {
+        if (restoreWindow.closed) {
+            clearInterval(timer);
+            alert('Veritabanı geri yüklendi. Uygulama yeniden başlatılıyor...');
+            window.location.reload();
+        }
+    }, 1000);
+}
 
 // MODAL & EXPORT
 function showModal(html){document.getElementById('modalContent').innerHTML=html;document.getElementById('modal').style.display='block'}
